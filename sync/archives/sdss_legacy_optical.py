@@ -6,12 +6,17 @@ Confirmed real, not just bookkeeping: legacy specObj caps at MJD 58932
 exposed here, but none is needed: this goes through positional_easy_match
 like ESO. Deep-link pattern confirmed live (returns a real viewer page, not
 just docs-inferred).
+
+ra/dec read via clean_float defensively — this REST JSON endpoint hasn't
+been observed to return a null position, but ra/dec=null crashing the
+matcher's KD-tree build was confirmed as a real failure mode elsewhere
+(mast.py), so it costs nothing to guard here too.
 """
 
 import requests
 from astropy.time import Time
 
-from sync.base import RawObservation
+from sync.base import RawObservation, clean_float
 
 SQL_URL = "https://skyserver.sdss.org/dr19/SkyServerWS/SearchTools/SqlSearch"
 
@@ -55,8 +60,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="SDSS/BOSS",
                 obs_date=Time(mjd, format="mjd").to_datetime().date(),
                 program_id=row["run2d"],
-                ra=float(row["ra"]),
-                dec=float(row["dec"]),
+                ra=clean_float(row["ra"]),
+                dec=clean_float(row["dec"]),
             )
         )
 

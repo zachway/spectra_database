@@ -13,6 +13,8 @@ import psycopg
 from astroquery.gaia import Gaia
 from astroquery.simbad import Simbad
 
+from sync.base import clean_float
+
 GAIA_QUERY = """
 SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
        phot_g_mean_mag, has_rvs, has_xp_continuous
@@ -96,10 +98,10 @@ def fetch_gaia_row(gaia_source_id: int) -> dict:
         "ra": float(row["ra"]),
         "dec": float(row["dec"]),
         "ref_epoch": float(row["ref_epoch"]),
-        "pmra": float(row["pmra"]) if row["pmra"] is not None else None,
-        "pmdec": float(row["pmdec"]) if row["pmdec"] is not None else None,
-        "parallax": float(row["parallax"]) if row["parallax"] is not None else None,
-        "phot_g_mean_mag": float(row["phot_g_mean_mag"]) if row["phot_g_mean_mag"] is not None else None,
+        "pmra": clean_float(row["pmra"]),
+        "pmdec": clean_float(row["pmdec"]),
+        "parallax": clean_float(row["parallax"]),
+        "phot_g_mean_mag": clean_float(row["phot_g_mean_mag"]),
         "has_rvs": bool(row["has_rvs"]),
         "has_xp_continuous": bool(row["has_xp_continuous"]),
     }

@@ -4,6 +4,21 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
+import numpy as np
+
+
+def clean_float(value) -> float | None:
+    """Astropy/VO table rows carry masked (missing) numeric fields — a plain
+    `is not None` check doesn't catch those (they're numpy.ma.masked, not
+    Python None), so a naive `float(value)` silently produces NaN instead of
+    a proper missing value. NaN ra/dec in particular crashes the matcher's
+    KD-tree build outright (confirmed live via mast.py) rather than just
+    being wrong — always use this when reading a possibly-masked column.
+    """
+    if value is None or np.ma.is_masked(value):
+        return None
+    return float(value)
+
 
 @dataclass
 class RawObservation:

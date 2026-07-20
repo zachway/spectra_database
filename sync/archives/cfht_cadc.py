@@ -31,6 +31,10 @@ astrometric solution can be biased for astrometric binaries, so its
 proper motion doesn't always predict the star's true position. The matcher
 correctly skipped rather than force a wrong match; this is a real Gaia data
 quality limit the "easy match" design accepts and defers, not a bug.
+
+s_ra/s_dec read via clean_float — can be masked on real rows (confirmed as a
+real pattern via mast.py), and a bare float() would turn that into NaN and
+crash the matcher's KD-tree build outright.
 """
 
 from urllib.parse import quote
@@ -38,7 +42,7 @@ from urllib.parse import quote
 import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation
+from sync.base import RawObservation, clean_float
 
 TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus"
 
@@ -74,8 +78,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 archive_url=DATALINK_URL.format(did=quote(did, safe="")),
                 instrument=str(row["instrument_name"]),
                 obs_date=Time(t_min, format="mjd").to_datetime().date(),
-                ra=float(row["s_ra"]),
-                dec=float(row["s_dec"]),
+                ra=clean_float(row["s_ra"]),
+                dec=clean_float(row["s_dec"]),
                 raw_target_name=str(row["target_name"]),
             )
         )

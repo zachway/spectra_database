@@ -12,7 +12,7 @@ one-shot pulls, carmenes) short-circuit to a no-op after their first run via
 their own cursor. One archive failing doesn't stop the others — the error is
 logged, the connection is rolled back so the failure can't poison the next
 archive's transaction, and the driver moves on. Not-yet-implemented archives
-(mast, noirlab, koa, weave, four_most) aren't registered here at all.
+(noirlab, koa, weave, four_most) aren't registered here at all.
 """
 
 import argparse
@@ -30,6 +30,7 @@ from sync.archives import (
     galah,
     gemini,
     lamost,
+    mast,
     rave,
     sdss_legacy_optical,
     sdss_v_apogee,
@@ -47,6 +48,7 @@ ARCHIVES = {
     "cfht_cadc": cfht_cadc.fetch,
     "gemini": gemini.fetch,
     "lamost": lamost.fetch,
+    "mast": mast.fetch,
     "sdss_v_apogee": sdss_v_apogee.fetch,
     "sdss_v_optical": sdss_v_optical.fetch,
     "sdss_legacy_optical": sdss_legacy_optical.fetch,

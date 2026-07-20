@@ -4,12 +4,17 @@ No upload-JOIN support (confirmed earlier), so this pulls the full spectrum
 table incrementally and lets the generic positional_easy_match path in
 sync.matcher do the cross-match locally. ~2.4M spectrum rows total — this
 paginates by t_min (MJD) watermark rather than pulling it all in one shot.
+
+s_ra/s_dec can be masked on some rows (confirmed as a real pattern via
+mast.py — calibration-type exposures lack real sky coordinates) — read via
+clean_float rather than a bare float(), which would otherwise turn a masked
+value into NaN and crash the matcher's KD-tree build outright.
 """
 
 import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation
+from sync.base import RawObservation, clean_float
 
 TAP_URL = "http://archive.eso.org/tap_obs"
 
@@ -50,8 +55,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument=str(row["instrument_name"]),
                 obs_date=Time(t_min, format="mjd").to_datetime().date(),
                 program_id=str(row["proposal_id"]),
-                ra=float(row["s_ra"]),
-                dec=float(row["s_dec"]),
+                ra=clean_float(row["s_ra"]),
+                dec=clean_float(row["s_dec"]),
                 raw_target_name=str(row["target_name"]),
             )
         )
