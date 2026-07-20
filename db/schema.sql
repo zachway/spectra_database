@@ -108,7 +108,7 @@ INSERT INTO archives (archive_code, display_name, access_mechanism, has_native_g
     ('sdss_v_optical',       'SDSS-V — Optical',                 'bulk_file', TRUE,  'dr2', 'Implemented directly against the bulk spAll-lite file (612MB gzip) — GAIA_ID 100% populated for CLASS=STAR, including live-confirmed FPS-era rows. Public docs say DR2; internally already DR3, DR20 (~Aug 2026) expected to make that public — recheck then.'),
     ('sdss_legacy_optical',  'SDSS Legacy Optical',              'cas_sql',   FALSE, NULL, 'Implemented — no Gaia column, positional match via specObj ra/dec, capped at MJD 58932.'),
     ('lamost',               'LAMOST',                           'sql_api',   TRUE,  'dr3', 'Implemented via an undocumented SQL API (www.lamost.org/dr11/v2.0/sql/q) — catalogue.gaia_source_id 100% populated for CLASS=STAR.'),
-    ('koa',                  'Keck Observatory Archive',         'tap',       FALSE, NULL, NULL),
+    ('koa',                  'Keck Observatory Archive',         'tap',       FALSE, NULL, 'Implemented for koa_hires. koa_deimos/koa_esi share the same column shape; koa_lris/koa_nires use mjd_obs instead of mjd — schema not uniform across instruments.'),
     ('cfht_cadc',             'CFHT / CADC',                      'tap',       FALSE, NULL, 'Implemented via CADC (ivoa.ObsCore, obs_collection CFHT). Real sharp cliff: 20k rows in 11s, 30k in 60s — paginated at 15k.'),
     ('weave',                 'WEAVE',                            NULL,        FALSE, NULL, 'Not yet public.'),
     ('4most',                 '4MOST',                            NULL,        FALSE, NULL, 'Not yet public; archive confirmed empty, will ride ESO integration once live.'),
