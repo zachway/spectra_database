@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(mkdir -p /private/tmp/claude-501/-Users-zway-Documents-Various-Code-spectra-database/016ee0ce-4ed9-42f7-b998-5c296a3dedaa/scratchpad)",
-      "Bash(python3 -c ' *)"
-    ]
-  }
-}
