@@ -71,6 +71,20 @@ def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
     return int(table[0]["source_id"])
 
 
+def fetch_name_aliases(gaia_source_id: int) -> list[str]:
+    """All of SIMBAD's known aliases for this star, for identifier-matching an
+    archive's own target_name against a tracked star — the primary match path,
+    with positional matching as fallback (see sync.matcher). Empty list if
+    SIMBAD doesn't carry this source at all.
+    """
+    simbad = Simbad()
+    simbad.add_votable_fields("ids")
+    result = simbad.query_object(f"Gaia DR3 {gaia_source_id}")
+    if result is None or len(result) == 0 or result["ids"][0] is None:
+        return []
+    return [tok.strip() for tok in str(result["ids"][0]).split("|")]
+
+
 def fetch_gaia_row(gaia_source_id: int) -> dict:
     job = Gaia.launch_job(GAIA_QUERY.format(source_id=gaia_source_id))
     table = job.get_results()
@@ -94,16 +108,17 @@ def fetch_gaia_row(gaia_source_id: int) -> dict:
 def add_star(conn: psycopg.Connection, gaia_source_id: int, input_name: str | None = None) -> dict:
     star = fetch_gaia_row(gaia_source_id)
     star["input_name"] = input_name
+    star["name_aliases"] = fetch_name_aliases(gaia_source_id)
 
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec,
                                 parallax, phot_g_mean_mag, has_gaia_rvs, has_xp_continuous,
-                                input_name)
+                                input_name, name_aliases)
             VALUES (%(gaia_source_id)s, %(ra)s, %(dec)s, %(ref_epoch)s, %(pmra)s,
                     %(pmdec)s, %(parallax)s, %(phot_g_mean_mag)s, %(has_rvs)s, %(has_xp_continuous)s,
-                    %(input_name)s)
+                    %(input_name)s, %(name_aliases)s)
             ON CONFLICT (gaia_source_id) DO UPDATE SET
                 ra = EXCLUDED.ra,
                 dec = EXCLUDED.dec,
@@ -114,7 +129,8 @@ def add_star(conn: psycopg.Connection, gaia_source_id: int, input_name: str | No
                 phot_g_mean_mag = EXCLUDED.phot_g_mean_mag,
                 has_gaia_rvs = EXCLUDED.has_gaia_rvs,
                 has_xp_continuous = EXCLUDED.has_xp_continuous,
-                input_name = COALESCE(EXCLUDED.input_name, stars.input_name)
+                input_name = COALESCE(EXCLUDED.input_name, stars.input_name),
+                name_aliases = EXCLUDED.name_aliases
             """,
             star,
         )

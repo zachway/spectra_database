@@ -14,14 +14,15 @@ def _offset(ra, dec, position_angle_deg, sep_arcsec):
     return moved.ra.deg, moved.dec.deg
 
 
-def _insert_star(cur, gaia_source_id, ra, dec):
+def _insert_star(cur, gaia_source_id, ra, dec, name_aliases=None):
     cur.execute(
         """
-        INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec)
-        VALUES (%s, %s, %s, 2016.0, 0, 0)
-        ON CONFLICT (gaia_source_id) DO UPDATE SET ra = EXCLUDED.ra, dec = EXCLUDED.dec
+        INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec, name_aliases)
+        VALUES (%s, %s, %s, 2016.0, 0, 0, %s)
+        ON CONFLICT (gaia_source_id) DO UPDATE SET ra = EXCLUDED.ra, dec = EXCLUDED.dec,
+                                                     name_aliases = EXCLUDED.name_aliases
         """,
-        (gaia_source_id, ra, dec),
+        (gaia_source_id, ra, dec, name_aliases),
     )
 
 
@@ -141,3 +142,50 @@ def test_idempotent_rerun(conn):
             "SELECT count(*) FROM spectroscopy_holdings WHERE archive_code='unit_test' AND archive_obs_id='idem-1'"
         )
         assert cur.fetchone()[0] == 1
+
+
+def test_name_resolved_beats_missing_positional_match(conn):
+    """Identifier match must succeed even when the record's position is far
+    enough off that positional matching alone would skip it — the whole
+    point of trying identifier first (e.g. Gaia's astrometric fit can be
+    biased for binaries, breaking positional matching even with correct PM).
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000040, 40.0, 40.0, name_aliases=["GJ 169.1 A", "NAME Stein 2051"])
+    conn.commit()
+
+    rec = RawObservation(
+        archive_obs_id="name-1", archive_url="http://example.test/name1",
+        ra=40.01, dec=40.01, obs_date=date(2016, 1, 1),  # ~50" off — well outside the 1" radius
+        raw_target_name="Gl169.1A",  # "Gl" vs "GJ" — must normalize to match
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["name_matched"] == 1
+    assert counts["positional_matched"] == 0
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT gaia_source_id, match_method, match_status, theta_arcsec FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id='name-1'"
+        )
+        gaia_id, method, status, theta = cur.fetchone()
+    assert gaia_id == 900000000000000040
+    assert method == "name_resolved"
+    assert status == "matched"
+    assert theta is None
+
+
+def test_name_resolution_falls_back_to_positional_when_no_alias_hit(conn):
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000050, 60.0, -20.0, name_aliases=["GJ 999"])
+    conn.commit()
+
+    ra, dec = _offset(60.0, -20.0, 0.0, 0.3)
+    rec = RawObservation(
+        archive_obs_id="name-2", archive_url="http://example.test/name2",
+        ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+        raw_target_name="Some Other Name",
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["name_matched"] == 0
+    assert counts["positional_matched"] == 1

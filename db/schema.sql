@@ -20,6 +20,13 @@ CREATE TABLE stars (
     -- What the caller actually searched for, when ingestion went through name
     -- resolution (SIMBAD) rather than a known source_id. NULL if added directly.
     input_name          TEXT,
+    -- SIMBAD's full alias list for this star (catalog IDs, common names, ...),
+    -- cached at add_star time. Used to identifier-match an archive's own
+    -- target_name against this star before falling back to positional
+    -- matching — identifier match is the primary path, position is backup,
+    -- since Gaia's astrometric fit can be biased for binaries/crowded fields
+    -- in ways that break pure positional matching even with correct PM.
+    name_aliases         TEXT[],
     added_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -65,6 +72,7 @@ CREATE TABLE spectroscopy_holdings (
 
     match_method        TEXT NOT NULL CHECK (match_method IN (
                              'direct_gaia_column',   -- archive already carries Gaia source_id
+                             'name_resolved',         -- archive's target_name matched a tracked star's SIMBAD alias
                              'positional_easy_match', -- tight-radius, single-candidate match
                              'lr_matched',            -- full likelihood-ratio match (not built yet)
                              'manual'

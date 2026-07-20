@@ -1,20 +1,29 @@
 """Match raw archive observation records against tracked stars.
 
-Two paths, matching the "easy match first" design — full likelihood-ratio
-matching is deferred:
+Three paths, in priority order — identifier match first, position as backup
+only, matching the "easy match first" design (full likelihood-ratio matching
+is still deferred):
 
 - direct_gaia_column: the archive already reports a Gaia source_id — just
   check it's one of ours.
-- positional_easy_match: no Gaia column on the record. Propagate every
-  tracked star's proper motion to the observation's epoch, then tight-radius
-  match against the raw record's position, using only our own tracked star
-  list as the candidate catalog (not the full Gaia catalog — deferred along
-  with full LR matching). Exactly one star within radius -> matched; more
-  than one -> needs_review (ambiguous); zero -> the record isn't one of ours
-  and is silently skipped (bulk archive tables hold far more objects than we
-  track).
+- name_resolved: no Gaia column, but the record's raw_target_name matches one
+  of a tracked star's cached SIMBAD aliases. Tried before positional matching
+  because position can fail even when correctly propagated — Gaia's
+  single-star astrometric fit can be biased for binaries/crowded fields (seen
+  live: a CFHT/CADC record for Stein 2051 A, a known visual binary, missed
+  its positional match despite correct proper motion — its identifier would
+  have caught it). Identifier match sidesteps that entirely.
+- positional_easy_match: only for records that didn't identifier-match.
+  Propagate every tracked star's proper motion to the observation's epoch,
+  then tight-radius match against the raw record's position, using only our
+  own tracked star list as the candidate catalog (not the full Gaia catalog —
+  deferred along with full LR matching). Exactly one star within radius ->
+  matched; more than one -> needs_review (ambiguous); zero -> the record
+  isn't one of ours and is silently skipped (bulk archive tables hold far
+  more objects than we track).
 """
 
+import re
 import warnings
 from collections import defaultdict
 
@@ -30,10 +39,32 @@ from sync.base import RawObservation
 EASY_MATCH_RADIUS_ARCSEC = 1.0
 
 
+def _normalize_name(name: str) -> str:
+    key = re.sub(r"\s+", "", name).upper()
+    if key.startswith("GL"):
+        # "Gl" (Gliese) and "GJ" (Gliese-Jahreiss) are used interchangeably
+        # for the same catalog in practice — e.g. CFHT's "Gl169.1A" vs
+        # SIMBAD's "GJ 169.1 A" for the same star.
+        key = "GJ" + key[2:]
+    return key
+
+
 def _load_stars(conn: psycopg.Connection) -> list[tuple]:
     with conn.cursor() as cur:
         cur.execute("SELECT gaia_source_id, ra, dec, ref_epoch, pmra, pmdec FROM stars")
         return cur.fetchall()
+
+
+def _load_star_aliases(conn: psycopg.Connection) -> dict[str, int]:
+    """Normalized alias -> gaia_source_id, for identifier matching."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT gaia_source_id, name_aliases FROM stars WHERE name_aliases IS NOT NULL")
+        rows = cur.fetchall()
+    lookup: dict[str, int] = {}
+    for gaia_source_id, aliases in rows:
+        for alias in aliases or []:
+            lookup[_normalize_name(alias)] = gaia_source_id
+    return lookup
 
 
 def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], SkyCoord]:
@@ -111,10 +142,10 @@ def _upsert_holding(
 
 
 def match_records(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> dict:
-    counts = {"direct_matched": 0, "positional_matched": 0, "needs_review": 0, "skipped": 0}
+    counts = {"direct_matched": 0, "name_matched": 0, "positional_matched": 0, "needs_review": 0, "skipped": 0}
 
     direct = [r for r in records if r.gaia_source_id is not None]
-    positional = [r for r in records if r.gaia_source_id is None]
+    no_gaia_column = [r for r in records if r.gaia_source_id is None]
 
     with conn.cursor() as cur:
         for r in direct:
@@ -124,6 +155,19 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
                 continue
             _upsert_holding(cur, archive_code, r, r.gaia_source_id, "direct_gaia_column", "matched", None)
             counts["direct_matched"] += 1
+    conn.commit()
+
+    # Identifier match — tried before position, not just as a tiebreaker.
+    alias_lookup = _load_star_aliases(conn)
+    positional = []
+    with conn.cursor() as cur:
+        for r in no_gaia_column:
+            gaia_id = alias_lookup.get(_normalize_name(r.raw_target_name)) if r.raw_target_name else None
+            if gaia_id is not None:
+                _upsert_holding(cur, archive_code, r, gaia_id, "name_resolved", "matched", None)
+                counts["name_matched"] += 1
+            else:
+                positional.append(r)
     conn.commit()
 
     positional = [r for r in positional if r.ra is not None and r.dec is not None and r.obs_date is not None]
