@@ -1,0 +1,1 @@
+- [SDSS GAIA_ID → DR3 in DR20](project_sdss_gaia_id_dr20.md) — SDSS-V BOSS GAIA_ID switches DR2→DR3 source_id in DR20, due ~Aug 2026
