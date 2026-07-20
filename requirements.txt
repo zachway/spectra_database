@@ -1,3 +1,5 @@
 astroquery
 astropy
 psycopg[binary]
+beautifulsoup4
+requests
