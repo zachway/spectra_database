@@ -6,3 +6,5 @@ requests
 flask
 duckdb
 huggingface_hub
+scipy
+aiohttp
