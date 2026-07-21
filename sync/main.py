@@ -15,6 +15,8 @@ archive's transaction, and the driver moves on. Not-yet-implemented archives
 (weave, four_most) aren't registered here at all — they have no public data.
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
 import os

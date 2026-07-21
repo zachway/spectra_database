@@ -23,6 +23,8 @@ is still deferred):
   more objects than we track).
 """
 
+from __future__ import annotations
+
 import re
 import warnings
 from collections import defaultdict

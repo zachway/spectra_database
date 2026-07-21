@@ -6,6 +6,8 @@ availability (has_rvs) comes back on the same gaia_source row — no separate
 archive sync needed for that one.
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 
