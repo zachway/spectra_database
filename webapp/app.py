@@ -137,6 +137,7 @@ PAGE_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>
+  <p class="note">Matches come from three methods: archives that carry their own Gaia source_id are matched directly (most reliable); otherwise matching falls back to resolving the archive's reported name via SIMBAD, or to position (RA/Dec) when no usable name is given. Name- and position-based matches are not guaranteed correct — ambiguous names, mistaken identifications, and crowded or close-binary fields can produce a wrong match. Each observation's "Match" status ("matched" vs "needs_review") reflects this — treat "needs_review" as unconfirmed.</p>
   <form method="get" action="">
     <input type="text" name="q" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit">Search</button>
