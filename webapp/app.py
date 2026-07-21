@@ -351,10 +351,16 @@ CMD_TEMPLATE = """
     <script>
       const bpRp = {{ bp_rp | tojson }};
       const absGMag = {{ abs_g_mag | tojson }};
+      // Gaia source_ids are 19-digit integers, well past JS's 53-bit safe-
+      // integer range — serialized as strings (never as JSON numbers) so
+      // they can't get silently rounded by the browser.
       const sourceIds = {{ source_ids | tojson }};
+      const labels = {{ labels | tojson }};
       Plotly.newPlot('cmd-plot', [{
         x: bpRp,
         y: absGMag,
+        text: labels,
+        hovertemplate: '%{text}<extra></extra>',
         mode: 'markers',
         type: 'scattergl',
         marker: { size: 3, opacity: 0.5, color: bpRp, colorscale: 'RdYlBu', reversescale: true },
@@ -382,7 +388,8 @@ def cmd():
     cur.execute(
         f"""
         SELECT gaia_source_id, phot_bp_mean_mag - phot_rp_mean_mag AS bp_rp,
-               phot_g_mean_mag + 5 * log10(parallax) - 10 AS abs_g_mag
+               phot_g_mean_mag + 5 * log10(parallax) - 10 AS abs_g_mag,
+               name_aliases, input_name
         FROM stars
         WHERE phot_bp_mean_mag IS NOT NULL AND phot_rp_mean_mag IS NOT NULL
           AND phot_g_mean_mag IS NOT NULL AND parallax > 0
@@ -394,7 +401,8 @@ def cmd():
         CMD_TEMPLATE,
         bp_rp=[r["bp_rp"] for r in rows],
         abs_g_mag=[r["abs_g_mag"] for r in rows],
-        source_ids=[r["gaia_source_id"] for r in rows],
+        source_ids=[str(r["gaia_source_id"]) for r in rows],
+        labels=[_known_as(r) for r in rows],
         sample_size=CMD_SAMPLE_SIZE,
         active_tab="cmd",
     )
