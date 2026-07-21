@@ -1,17 +1,28 @@
 """Minimal search webpage for the spectra database — single-star search by
 Gaia source_id or name, plus a batch upload for a list of either.
 
-Kept to a single file, no build step, no external JS framework, so it runs
-as a plain user on a Linux server with nothing more than `pip install flask`
-and the DATABASE_URL env var already used everywhere else in this project.
+Reads a read-only DuckDB view over a Parquet snapshot instead of a live
+Postgres connection — this process has no DATABASE_URL and never writes.
+The snapshot is published by scripts.export_to_parquet from the real
+Postgres database (wherever that runs); this app only needs read access to
+it, either straight from a Hugging Face Hub dataset repo (HF_DATASET_REPO,
+what the hosted Space uses) or a local directory (SPECTRA_DATA_DIR) — which
+is what keeps hosting free, see project notes on Hub storage vs. a hosted
+Postgres.
 
-Run locally:
-    DATABASE_URL=postgresql:///spectra_local python3 -m webapp.app
+Run locally against a local export:
+    python3 -m scripts.export_to_parquet --out-dir ./data --no-publish
+    SPECTRA_DATA_DIR=./data python3 -m webapp.app
+
+Run against the published snapshot (what the Space does):
+    HF_DATASET_REPO=yourname/spectra-database python3 -m webapp.app
 """
+
+from __future__ import annotations
 
 import os
 
-import psycopg
+import duckdb
 from flask import Flask, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
@@ -25,9 +36,49 @@ app = Flask(__name__)
 # query — per project to-do, laptop/small-server scale, not a bulk pipeline.
 MAX_NAME_LOOKUPS = 2000
 
+DATA_TABLES = ("stars", "archives", "spectroscopy_holdings")
 
-def get_connection() -> psycopg.Connection:
-    return psycopg.connect(os.environ["DATABASE_URL"])
+
+def _resolve_data_dir() -> str:
+    repo_id = os.environ.get("HF_DATASET_REPO")
+    if repo_id:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(repo_id=repo_id, repo_type="dataset")
+    local_dir = os.environ.get("SPECTRA_DATA_DIR")
+    if not local_dir:
+        raise RuntimeError(
+            "Set HF_DATASET_REPO (published snapshot) or SPECTRA_DATA_DIR "
+            "(local export) — see webapp.app's module docstring."
+        )
+    return local_dir
+
+
+def _make_connection() -> duckdb.DuckDBPyConnection:
+    data_dir = _resolve_data_dir()
+    con = duckdb.connect(database=":memory:")
+    for table in DATA_TABLES:
+        path = os.path.join(data_dir, f"{table}.parquet")
+        con.execute(f"CREATE VIEW {table} AS SELECT * FROM read_parquet('{path}')")
+    return con
+
+
+# One shared connection, loaded once at process startup — re-reading the
+# Parquet snapshot per request would be wasteful and it only changes when
+# scripts.export_to_parquet publishes a new one anyway. DuckDB connections
+# aren't safe for concurrent execute() calls from multiple threads, so each
+# request pulls its own cursor off this rather than sharing it directly —
+# cursors share the parent's views/data and are safe to use concurrently.
+_con = _make_connection()
+
+
+def get_cursor() -> duckdb.DuckDBPyConnection:
+    return _con.cursor()
+
+
+def _rows_as_dicts(cur: duckdb.DuckDBPyConnection) -> list[dict]:
+    columns = [c[0] for c in cur.description]
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
 PAGE_TEMPLATE = """
@@ -166,27 +217,28 @@ def search():
             return _blank(query=query, error=str(e))
         resolved_source_id = source_id
 
-    with get_connection() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-        cur.execute("SELECT * FROM stars WHERE gaia_source_id = %s", (source_id,))
-        star = cur.fetchone()
-        if star is None:
-            return _blank(
-                query=query,
-                error=f"No tracked star with source_id {source_id}.",
-                resolved_source_id=resolved_source_id,
-            )
-
-        cur.execute(
-            """
-            SELECT h.*, a.display_name
-            FROM spectroscopy_holdings h
-            JOIN archives a ON a.archive_code = h.archive_code
-            WHERE h.gaia_source_id = %s
-            ORDER BY a.display_name, h.obs_date
-            """,
-            (source_id,),
+    cur = get_cursor()
+    cur.execute("SELECT * FROM stars WHERE gaia_source_id = ?", [source_id])
+    rows = _rows_as_dicts(cur)
+    star = rows[0] if rows else None
+    if star is None:
+        return _blank(
+            query=query,
+            error=f"No tracked star with source_id {source_id}.",
+            resolved_source_id=resolved_source_id,
         )
-        holdings = cur.fetchall()
+
+    cur.execute(
+        """
+        SELECT h.*, a.display_name
+        FROM spectroscopy_holdings h
+        JOIN archives a ON a.archive_code = h.archive_code
+        WHERE h.gaia_source_id = ?
+        ORDER BY a.display_name, h.obs_date
+        """,
+        [source_id],
+    )
+    holdings = _rows_as_dicts(cur)
 
     return render_template_string(
         PAGE_TEMPLATE, query=query, star=star, holdings=holdings,
@@ -243,23 +295,23 @@ def batch_search():
     tracked: dict[int, dict] = {}
     holdings_counts: dict[int, int] = {}
     if all_source_ids:
-        with get_connection() as conn, conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
-            cur.execute(
-                "SELECT gaia_source_id, name_aliases, input_name FROM stars WHERE gaia_source_id = ANY(%s)",
-                (all_source_ids,),
-            )
-            tracked = {row["gaia_source_id"]: row for row in cur.fetchall()}
+        cur = get_cursor()
+        cur.execute(
+            "SELECT gaia_source_id, name_aliases, input_name FROM stars WHERE list_contains(?, gaia_source_id)",
+            [all_source_ids],
+        )
+        tracked = {row["gaia_source_id"]: row for row in _rows_as_dicts(cur)}
 
-            cur.execute(
-                """
-                SELECT gaia_source_id, COUNT(*) AS n
-                FROM spectroscopy_holdings
-                WHERE gaia_source_id = ANY(%s)
-                GROUP BY gaia_source_id
-                """,
-                (all_source_ids,),
-            )
-            holdings_counts = {row["gaia_source_id"]: row["n"] for row in cur.fetchall()}
+        cur.execute(
+            """
+            SELECT gaia_source_id, COUNT(*) AS n
+            FROM spectroscopy_holdings
+            WHERE list_contains(?, gaia_source_id)
+            GROUP BY gaia_source_id
+            """,
+            [all_source_ids],
+        )
+        holdings_counts = {row["gaia_source_id"]: row["n"] for row in _rows_as_dicts(cur)}
 
     results = []
     for entry in entries:
@@ -298,7 +350,7 @@ def batch_search():
 
 
 if __name__ == "__main__":
-    # 5000 is claimed by macOS's AirPlay Receiver on modern macOS (Monterey+)
-    # — hitting it gives a confusing "access denied" instead of ever reaching
-    # Flask. 5001 avoids the conflict without touching system settings.
-    app.run(host="127.0.0.1", port=5001, debug=True)
+    # 7860 is the port Hugging Face Spaces' Docker SDK expects apps to
+    # listen on; kept as the default locally too so there's one code path.
+    port = int(os.environ.get("PORT", 7860))
+    app.run(host="0.0.0.0", port=port, threaded=True, debug=os.environ.get("FLASK_DEBUG") == "1")
