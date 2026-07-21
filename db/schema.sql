@@ -4,6 +4,12 @@
 -- mirrors, no full likelihood-ratio match machinery yet (deferred — see
 -- match_method/match_status below for the interim "easy match" approach).
 
+-- q3c powers sync.matcher's positional-match candidate lookup (indexed
+-- radial queries against stars.ra/dec) — not packaged for conda-forge or
+-- Homebrew as of this writing, must be built from source:
+-- https://github.com/segasai/q3c
+CREATE EXTENSION IF NOT EXISTS q3c;
+
 CREATE TABLE stars (
     gaia_source_id      BIGINT PRIMARY KEY,
     ra                  DOUBLE PRECISION NOT NULL,   -- deg, ICRS, at ref_epoch
@@ -29,6 +35,13 @@ CREATE TABLE stars (
     name_aliases         TEXT[],
     added_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Powers sync.matcher's positional-match candidate lookup (q3c_join against
+-- this) — without it, positional matching has to load the whole tracked-star
+-- catalog into Python and rebuild a KD-tree per observation epoch, which
+-- stopped scaling once the catalog passed ~1M rows (confirmed live: single
+-- pages of date-heavy archives like ESO/MAST took minutes to over an hour).
+CREATE INDEX q3c_stars_idx ON stars (q3c_ang2ipix(ra, dec));
 
 CREATE TABLE archives (
     archive_code            TEXT PRIMARY KEY,   -- e.g. 'gemini', 'sdss_v_optical', 'carmenes'

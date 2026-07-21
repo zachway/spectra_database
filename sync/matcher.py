@@ -13,14 +13,16 @@ is still deferred):
   live: a CFHT/CADC record for Stein 2051 A, a known visual binary, missed
   its positional match despite correct proper motion — its identifier would
   have caught it). Identifier match sidesteps that entirely.
-- positional_easy_match: only for records that didn't identifier-match.
-  Propagate every tracked star's proper motion to the observation's epoch,
-  then tight-radius match against the raw record's position, using only our
-  own tracked star list as the candidate catalog (not the full Gaia catalog —
-  deferred along with full LR matching). Exactly one star within radius ->
-  matched; more than one -> needs_review (ambiguous); zero -> the record
-  isn't one of ours and is silently skipped (bulk archive tables hold far
-  more objects than we track).
+- positional_easy_match: only for records that didn't identifier-match. A
+  q3c-indexed radial query (see _load_candidate_stars) narrows the tracked
+  star list down to a small spatially-relevant candidate set per observation
+  epoch, those get their proper motion propagated to the observation's
+  epoch, then it's a tight-radius match against the raw record's position —
+  using only our own tracked star list as the candidate catalog (not the
+  full Gaia catalog — deferred along with full LR matching). Exactly one
+  star within radius -> matched; more than one -> needs_review (ambiguous);
+  zero -> the record isn't one of ours and is silently skipped (bulk archive
+  tables hold far more objects than we track).
 """
 
 from __future__ import annotations
@@ -42,12 +44,16 @@ EASY_MATCH_RADIUS_ARCSEC = 1.0
 
 # Barnard's Star, ~10.3"/yr, is the fastest known proper motion of any star —
 # a safe upper bound on how far *any* tracked star's true position can have
-# drifted per year since its ref_epoch. Used to coarsely pre-filter which
-# stars are even worth propagating for a given observation epoch (see
-# _prefilter_candidates) — propagating the full tracked-star catalog (now
-# 1M+ rows) for every distinct observation date in a page doesn't scale,
-# confirmed live: a single ESO page took over an hour before this existed.
+# drifted per year since its ref_epoch. Used to size the q3c radial query in
+# _load_candidate_stars: any star further than EASY_MATCH_RADIUS_ARCSEC plus
+# its max possible drift from every target in an epoch group cannot possibly
+# match, real proper motion or not, so the DB never needs to hand it back.
 MAX_PM_ARCSEC_PER_YEAR = 10.3
+
+# Gaia DR3's ref_epoch is uniformly 2016.0 for every source in the release
+# (not a per-star varying value) — used directly to size the query radius
+# below, since q3c needs it *before* it knows which stars it'll return.
+GAIA_DR3_REF_EPOCH = 2016.0
 
 
 def _normalize_name(name: str) -> str:
@@ -60,9 +66,28 @@ def _normalize_name(name: str) -> str:
     return key
 
 
-def _load_stars(conn: psycopg.Connection) -> list[tuple]:
+def _load_candidate_stars(
+    conn: psycopg.Connection, target_ra: list[float], target_dec: list[float], radius_deg: float
+) -> list[tuple]:
+    """Coarse spatial candidates via q3c's indexed radial join — replaces
+    loading the entire tracked-star catalog into Python and rebuilding a
+    KD-tree per observation epoch (see MAX_PM_ARCSEC_PER_YEAR for why
+    radius_deg is a safe upper bound to use before propagation), which
+    stopped scaling once the catalog passed ~1M rows: confirmed live, a
+    single ESO page took over an hour, and even after an in-Python KD-tree
+    pre-filter cut that to minutes, date-heavy archives like MAST still paid
+    that cost once per distinct observation date in every page. q3c pushes
+    the spatial filter into Postgres's own index instead of Python.
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT gaia_source_id, ra, dec, ref_epoch, pmra, pmdec FROM stars")
+        cur.execute(
+            """
+            SELECT DISTINCT s.gaia_source_id, s.ra, s.dec, s.ref_epoch, s.pmra, s.pmdec
+            FROM stars s, unnest(%(target_ra)s::float8[], %(target_dec)s::float8[]) AS t(ra, dec)
+            WHERE q3c_join(t.ra, t.dec, s.ra, s.dec, %(radius_deg)s)
+            """,
+            {"target_ra": target_ra, "target_dec": target_dec, "radius_deg": radius_deg},
+        )
         return cur.fetchall()
 
 
@@ -96,28 +121,6 @@ def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], Sky
         warnings.filterwarnings("ignore", category=ErfaWarning, message=".*distance overridden.*")
         propagated = coords.apply_space_motion(new_obstime=Time(obs_jyear, format="jyear"))
     return list(ids), propagated
-
-
-def _prefilter_candidates(
-    star_rows: list[tuple], raw_coords: SkyCoord, targets: SkyCoord, obs_jyear: float
-) -> list[tuple]:
-    """Coarse, un-propagated position filter before the expensive per-epoch
-    apply_space_motion call: any star further than EASY_MATCH_RADIUS_ARCSEC
-    plus its max possible drift (MAX_PM_ARCSEC_PER_YEAR * years since its
-    ref_epoch) from every target in this epoch group cannot possibly match,
-    real proper motion or not — so it's not worth propagating at all. This
-    is a strict superset of the true candidates (no false negatives), just
-    computed against raw_coords's own KD-tree instead of star-by-star.
-    """
-    ref_epoch = [row[3] for row in star_rows]
-    max_years = max(abs(obs_jyear - re) for re in ref_epoch)
-    safety_radius = (EASY_MATCH_RADIUS_ARCSEC + MAX_PM_ARCSEC_PER_YEAR * max_years) * u.arcsec
-
-    # Same reversed-index convention as the real match below: first return
-    # value indexes the argument (raw_coords), second indexes self (targets).
-    idx_cat, _, _, _ = targets.search_around_sky(raw_coords, safety_radius)
-    keep = sorted(set(idx_cat))
-    return [star_rows[i] for i in keep]
 
 
 def _to_jyear(obs_date) -> float:
@@ -207,16 +210,6 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
     if not positional:
         return counts
 
-    star_rows = _load_stars(conn)
-    if not star_rows:
-        counts["skipped"] += len(positional)
-        return counts
-
-    raw_coords = SkyCoord(
-        ra=np.array([row[1] for row in star_rows]) * u.deg,
-        dec=np.array([row[2] for row in star_rows]) * u.deg,
-    )
-
     by_epoch = defaultdict(list)
     for r in positional:
         by_epoch[_to_jyear(r.obs_date)].append(r)
@@ -225,7 +218,9 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
         for epoch, recs in by_epoch.items():
             targets = SkyCoord(ra=[r.ra for r in recs] * u.deg, dec=[r.dec for r in recs] * u.deg)
 
-            candidate_rows = _prefilter_candidates(star_rows, raw_coords, targets, epoch)
+            max_years = abs(epoch - GAIA_DR3_REF_EPOCH)
+            radius_deg = (EASY_MATCH_RADIUS_ARCSEC + MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
+            candidate_rows = _load_candidate_stars(conn, [r.ra for r in recs], [r.dec for r in recs], radius_deg)
             if not candidate_rows:
                 counts["skipped"] += len(recs)
                 continue
