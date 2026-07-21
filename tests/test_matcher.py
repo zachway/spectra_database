@@ -240,3 +240,35 @@ def test_positional_match_survives_prefilter_for_fast_proper_motion(conn):
         )
         gaia_id = cur.fetchone()[0]
     assert gaia_id == 900000000000000060
+
+
+def test_bogus_sentinel_dec_does_not_crash(conn):
+    """Confirmed live: MAST reports dec=-99.0 (not masked/None, a genuine
+    present-but-physically-invalid sentinel) for calibration exposures
+    lacking real sky coordinates — clean_float doesn't catch this since
+    it's not a masked value, and an un-filtered -99 crashes SkyCoord
+    construction (dec must be in [-90, 90]) for the *whole* epoch group,
+    not just that one record. A record sharing the epoch with a bogus one
+    must still match normally.
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000070, 70.0, -20.0)
+    conn.commit()
+
+    ra, dec = _offset(70.0, -20.0, 0.0, 0.3)
+    good_rec = RawObservation(
+        archive_obs_id="sentinel-1", archive_url="http://example.test/sentinel1",
+        ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+    )
+    bogus_rec = RawObservation(
+        archive_obs_id="sentinel-2", archive_url="http://example.test/sentinel2",
+        ra=123.456, dec=-99.0, obs_date=date(2016, 1, 1),  # same epoch as good_rec
+    )
+    counts = matcher.match_records(conn, "unit_test", [good_rec, bogus_rec])
+    assert counts["positional_matched"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM spectroscopy_holdings WHERE archive_code='unit_test' AND archive_obs_id='sentinel-2'"
+        )
+        assert cur.fetchone() is None

@@ -206,7 +206,17 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
                 positional.append(r)
     conn.commit()
 
-    positional = [r for r in positional if r.ra is not None and r.dec is not None and r.obs_date is not None]
+    # dec must be a real latitude — clean_float only catches masked/None
+    # values, not a *present-but-bogus* sentinel for "no real position."
+    # Confirmed live: MAST reports -99.0 for calibration exposures lacking
+    # real sky coordinates (undocumented, distinct from the masked-column
+    # case clean_float handles), which crashed SkyCoord construction for
+    # the whole epoch group outright rather than just that one record.
+    positional = [
+        r
+        for r in positional
+        if r.ra is not None and r.dec is not None and r.obs_date is not None and -90.0 <= r.dec <= 90.0
+    ]
     if not positional:
         return counts
 
