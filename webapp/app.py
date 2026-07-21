@@ -371,6 +371,7 @@ CMD_TEMPLATE = """
           // reversescale — low BP-RP (hot/blue stars) -> blue, high
           // BP-RP (cool/red stars) -> red, matching real star color.
           colorscale: [[0, 'blue'], [0.5, '#ccc'], [1, 'red']],
+          cmin: -0.5, cmax: 5,
           line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
         },
       }], {
