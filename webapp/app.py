@@ -127,6 +127,7 @@ NAV_HTML = """
     <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
     <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
     <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
+    <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
   </nav>
 """
 
@@ -141,6 +142,7 @@ SHARED_STYLE = """
     .error { font-weight: bold; border: 1px solid #000; padding: 0.5rem; }
     .note { font-style: italic; }
     textarea { width: 100%; font-family: monospace; }
+    .search-input { width: 70%; max-width: 500px; font-family: monospace; font-size: 1rem; padding: 0.3rem; }
     hr { margin: 2rem 0; border: none; border-top: 1px solid #000; }
     details { border: 1px solid #000; margin-top: 0.5rem; padding: 0.3rem 0.5rem; }
     details table { margin-top: 0.3rem; }
@@ -161,9 +163,8 @@ PAGE_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">Matches come from three methods: archives that carry their own Gaia source_id are matched directly (most reliable); otherwise matching falls back to resolving the archive's reported name via SIMBAD, or to position (RA/Dec) when no usable name is given. Name- and position-based matches are not guaranteed correct — ambiguous names, mistaken identifications, and crowded or close-binary fields can produce a wrong match. Each observation's "Match" status ("matched" vs "needs_review") reflects this — treat "needs_review" as unconfirmed.</p>
   <form method="get" action="">
-    <input type="text" name="q" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
+    <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit">Search</button>
   </form>
   {% if resolved_source_id %}
@@ -535,6 +536,46 @@ def stats():
         by_archive=by_archive, by_method=by_method,
         active_tab="stats",
     )
+
+
+INFO_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — More Info</title>
+  <style>""" + SHARED_STYLE + """</style>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <h2>How matching works</h2>
+  <p>Every archive record goes through up to three match methods, tried in this order, and the first one that succeeds wins:</p>
+  <ol>
+    <li><b>direct_gaia_column</b> — the archive already reports a Gaia DR3 source_id for the record (e.g. DESI, LAMOST, GALAH, SDSS-V). This is just a lookup against the tracked-star list, not a positional or name match, so it's the most reliable method.</li>
+    <li><b>name_resolved</b> — no Gaia column, but the archive's reported target name matches one of a tracked star's cached SIMBAD aliases. Tried <i>before</i> position deliberately: Gaia's single-star astrometric solution can be biased for close visual binaries, which can break a positional match even with otherwise-correct proper motion — an identifier match sidesteps that failure mode entirely.</li>
+    <li><b>positional_easy_match</b> — no Gaia column and no name match. The record's reported RA/Dec is checked against tracked stars only (not the full Gaia catalog), each candidate's proper motion propagated to the observation's epoch, within a fixed 1.0 arcsecond radius. Exactly one candidate within radius → matched. More than one → <b>needs_review</b> (ambiguous, gaia_source_id left unassigned). Zero → silently skipped.</li>
+  </ol>
+  <p class="note">The 1.0" match radius is the same for every archive and instrument. Some instruments have a real, documented systematic offset between their reported pointing and the true catalog position (e.g. finder-camera-derived coordinates) — if that offset ever exceeds 1.0", the record is silently skipped rather than mismatched (the tight radius protects against false positives, at the cost of some real holdings never surfacing).</p>
+
+  <h2>What's likely missing</h2>
+  <p>This is a "pointer" database, not a spectra archive — it tracks whether an archive has a spectrum for a star and links to it, not the spectrum data (flux/wavelength arrays) itself. A few concrete, known gaps beyond that:</p>
+  <ul>
+    <li><b>Archives not yet implemented at all</b>: WEAVE and 4MOST (both not yet public as surveys).</li>
+    <li><b>Partial coverage within an implemented archive</b>: MAST only covers HST (JWST hits a server-side timeout on the same query shape, not yet worked around). NOIRLab only covers the SOAR Goodman Spectrograph (several other NOIRLab-hosted spectrographs — CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI — share the same API but aren't wired up). KOA only covers HIRES (DEIMOS/ESI/LRIS/NIRES aren't yet added). CARMENES only covers the public DR1 GTO portal, not the co-added template library or broader CAHA archive.</li>
+    <li><b>Name resolution gaps</b>: a small fraction of archive-reported names don't resolve via SIMBAD at all (e.g. 12 of CARMENES DR1's 362 targets) — those records are dropped rather than tracked, since there's no fallback identifier for them.</li>
+    <li><b>Gaia XP continuous spectra</b>: flagged as available per-star (see the "Gaia XP continuous" field on a star's page) but not ingested as data — same lean-pointer tradeoff as everything else here.</li>
+    <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
+  </ul>
+
+  <p class="note">See the Stats tab for current holdings-by-archive and matches-by-method breakdowns, and the Search page's Archive status footer for when each archive was last synced.</p>
+</body>
+</html>
+"""
+
+
+@app.route("/info")
+def info():
+    return render_template_string(INFO_TEMPLATE, active_tab="info")
 
 
 def _parse_batch_lines(text: str) -> list[str]:
