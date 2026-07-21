@@ -364,7 +364,14 @@ CMD_TEMPLATE = """
         hovertemplate: '%{text}<extra></extra>',
         mode: 'markers',
         type: 'scattergl',
-        marker: { size: 3, opacity: 0.5, color: bpRp, colorscale: 'RdYlBu', reversescale: true },
+        marker: {
+          size: 5, opacity: 0.75, color: bpRp,
+          // Explicit, unambiguous stops rather than a named palette +
+          // reversescale — low BP-RP (hot/blue stars) -> blue, high
+          // BP-RP (cool/red stars) -> red, matching real star color.
+          colorscale: [[0, 'blue'], [0.5, '#ccc'], [1, 'red']],
+          line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
+        },
       }], {
         xaxis: { title: 'BP - RP (mag)' },
         yaxis: { title: 'Absolute G magnitude', autorange: 'reversed' },
