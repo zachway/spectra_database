@@ -51,7 +51,7 @@ PAGE_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>
-  <form method="get" action="/">
+  <form method="get" action="">
     <input type="text" name="q" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit">Search</button>
   </form>
@@ -94,7 +94,7 @@ PAGE_TEMPLATE = """
 
   <h2>Batch lookup</h2>
   <p class="note">Paste or upload a list of Gaia source_ids and/or star names, one per line. Name lookups (anything non-numeric) are capped at {{ max_name_lookups }} per batch; source_id lookups are not.</p>
-  <form method="post" action="/batch" enctype="multipart/form-data">
+  <form method="post" action="batch" enctype="multipart/form-data">
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
     <p><input type="file" name="file" accept=".txt,.csv"></p>
     <button type="submit">Look up list</button>
@@ -114,7 +114,7 @@ PAGE_TEMPLATE = """
       {% for r in batch_results %}
       <tr>
         <td>{{ r.query }}</td>
-        <td>{% if r.source_id %}<a href="/?q={{ r.source_id }}">{{ r.source_id }}</a>{% else %}—{% endif %}</td>
+        <td>{% if r.source_id %}<a href="?q={{ r.source_id }}">{{ r.source_id }}</a>{% else %}—{% endif %}</td>
         <td>{{ r.status }}</td>
         <td>{{ r.known_as or "—" }}</td>
         <td>{{ r.holdings_count if r.holdings_count is not none else "—" }}</td>
