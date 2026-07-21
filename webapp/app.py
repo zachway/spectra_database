@@ -3,19 +3,20 @@ Gaia source_id or name, plus a batch upload for a list of either.
 
 Reads a read-only DuckDB view over a Parquet snapshot instead of a live
 Postgres connection — this process has no DATABASE_URL and never writes.
-The snapshot is published by scripts.export_to_parquet from the real
-Postgres database (wherever that runs); this app only needs read access to
-it, either straight from a Hugging Face Hub dataset repo (HF_DATASET_REPO,
-what the hosted Space uses) or a local directory (SPECTRA_DATA_DIR) — which
-is what keeps hosting free, see project notes on Hub storage vs. a hosted
-Postgres.
+The snapshot is written by scripts.export_to_parquet from the real Postgres
+database (wherever that runs) directly into morgan's ~/public_html, which
+joy's Apache (mod_userdir) already serves publicly — morgan and joy share
+the same NFS home directory, so nothing needs to explicitly sync/publish
+anything. This app reads it straight over HTTP via DuckDB's httpfs
+extension (SPECTRA_DATA_URL, what the hosted Cloud Run service uses), or
+from a local directory (SPECTRA_DATA_DIR) for local dev.
 
 Run locally against a local export:
-    python3 -m scripts.export_to_parquet --out-dir ./data --no-publish
+    python3 -m scripts.export_to_parquet --out-dir ./data
     SPECTRA_DATA_DIR=./data python3 -m webapp.app
 
-Run against the published snapshot (what the Space does):
-    HF_DATASET_REPO=yourname/spectra-database python3 -m webapp.app
+Run against the hosted snapshot (what Cloud Run does):
+    SPECTRA_DATA_URL=http://joy.chara.gsu.edu/~way/spectra_data python3 -m webapp.app
 """
 
 from __future__ import annotations
@@ -39,26 +40,29 @@ MAX_NAME_LOOKUPS = 2000
 DATA_TABLES = ("stars", "archives", "spectroscopy_holdings")
 
 
-def _resolve_data_dir() -> str:
-    repo_id = os.environ.get("HF_DATASET_REPO")
-    if repo_id:
-        from huggingface_hub import snapshot_download
-
-        return snapshot_download(repo_id=repo_id, repo_type="dataset")
+def _resolve_data_source() -> str:
+    """Base path or URL containing {stars,archives,spectroscopy_holdings}.parquet."""
+    url = os.environ.get("SPECTRA_DATA_URL")
+    if url:
+        return url.rstrip("/")
     local_dir = os.environ.get("SPECTRA_DATA_DIR")
-    if not local_dir:
-        raise RuntimeError(
-            "Set HF_DATASET_REPO (published snapshot) or SPECTRA_DATA_DIR "
-            "(local export) — see webapp.app's module docstring."
-        )
-    return local_dir
+    if local_dir:
+        return local_dir.rstrip("/")
+    raise RuntimeError(
+        "Set SPECTRA_DATA_URL (e.g. http://joy.chara.gsu.edu/~way/spectra_data "
+        "— what the hosted service uses) or SPECTRA_DATA_DIR (local export) — "
+        "see webapp.app's module docstring."
+    )
 
 
 def _make_connection() -> duckdb.DuckDBPyConnection:
-    data_dir = _resolve_data_dir()
+    source = _resolve_data_source()
     con = duckdb.connect(database=":memory:")
+    if source.startswith("http://") or source.startswith("https://"):
+        con.execute("INSTALL httpfs")
+        con.execute("LOAD httpfs")
     for table in DATA_TABLES:
-        path = os.path.join(data_dir, f"{table}.parquet")
+        path = f"{source}/{table}.parquet"
         con.execute(f"CREATE VIEW {table} AS SELECT * FROM read_parquet('{path}')")
     return con
 

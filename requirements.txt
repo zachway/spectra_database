@@ -5,6 +5,5 @@ beautifulsoup4
 requests
 flask
 duckdb
-huggingface_hub
 scipy
 aiohttp
