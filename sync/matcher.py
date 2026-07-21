@@ -40,6 +40,15 @@ from sync.base import RawObservation
 
 EASY_MATCH_RADIUS_ARCSEC = 1.0
 
+# Barnard's Star, ~10.3"/yr, is the fastest known proper motion of any star —
+# a safe upper bound on how far *any* tracked star's true position can have
+# drifted per year since its ref_epoch. Used to coarsely pre-filter which
+# stars are even worth propagating for a given observation epoch (see
+# _prefilter_candidates) — propagating the full tracked-star catalog (now
+# 1M+ rows) for every distinct observation date in a page doesn't scale,
+# confirmed live: a single ESO page took over an hour before this existed.
+MAX_PM_ARCSEC_PER_YEAR = 10.3
+
 
 def _normalize_name(name: str) -> str:
     key = re.sub(r"\s+", "", name).upper()
@@ -87,6 +96,28 @@ def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], Sky
         warnings.filterwarnings("ignore", category=ErfaWarning, message=".*distance overridden.*")
         propagated = coords.apply_space_motion(new_obstime=Time(obs_jyear, format="jyear"))
     return list(ids), propagated
+
+
+def _prefilter_candidates(
+    star_rows: list[tuple], raw_coords: SkyCoord, targets: SkyCoord, obs_jyear: float
+) -> list[tuple]:
+    """Coarse, un-propagated position filter before the expensive per-epoch
+    apply_space_motion call: any star further than EASY_MATCH_RADIUS_ARCSEC
+    plus its max possible drift (MAX_PM_ARCSEC_PER_YEAR * years since its
+    ref_epoch) from every target in this epoch group cannot possibly match,
+    real proper motion or not — so it's not worth propagating at all. This
+    is a strict superset of the true candidates (no false negatives), just
+    computed against raw_coords's own KD-tree instead of star-by-star.
+    """
+    ref_epoch = [row[3] for row in star_rows]
+    max_years = max(abs(obs_jyear - re) for re in ref_epoch)
+    safety_radius = (EASY_MATCH_RADIUS_ARCSEC + MAX_PM_ARCSEC_PER_YEAR * max_years) * u.arcsec
+
+    # Same reversed-index convention as the real match below: first return
+    # value indexes the argument (raw_coords), second indexes self (targets).
+    idx_cat, _, _, _ = targets.search_around_sky(raw_coords, safety_radius)
+    keep = sorted(set(idx_cat))
+    return [star_rows[i] for i in keep]
 
 
 def _to_jyear(obs_date) -> float:
@@ -181,14 +212,25 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
         counts["skipped"] += len(positional)
         return counts
 
+    raw_coords = SkyCoord(
+        ra=np.array([row[1] for row in star_rows]) * u.deg,
+        dec=np.array([row[2] for row in star_rows]) * u.deg,
+    )
+
     by_epoch = defaultdict(list)
     for r in positional:
         by_epoch[_to_jyear(r.obs_date)].append(r)
 
     with conn.cursor() as cur:
         for epoch, recs in by_epoch.items():
-            ids, propagated = _propagate(star_rows, epoch)
             targets = SkyCoord(ra=[r.ra for r in recs] * u.deg, dec=[r.dec for r in recs] * u.deg)
+
+            candidate_rows = _prefilter_candidates(star_rows, raw_coords, targets, epoch)
+            if not candidate_rows:
+                counts["skipped"] += len(recs)
+                continue
+
+            ids, propagated = _propagate(candidate_rows, epoch)
 
             # search_around_sky's first return value indexes the *argument*
             # (propagated), the second indexes self (targets) — the reverse

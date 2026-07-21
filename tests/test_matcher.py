@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from astropy.time import Time
 
 from sync import matcher
 from sync.base import RawObservation
@@ -189,3 +190,53 @@ def test_name_resolution_falls_back_to_positional_when_no_alias_hit(conn):
     counts = matcher.match_records(conn, "unit_test", [rec])
     assert counts["name_matched"] == 0
     assert counts["positional_matched"] == 1
+
+
+def test_positional_match_survives_prefilter_for_fast_proper_motion(conn):
+    """A star with real (but sub-Barnard's-Star) proper motion should still
+    match even though its un-propagated position is well outside the tight
+    1" match radius by the observation epoch — the coarse pre-filter's
+    safety margin (MAX_PM_ARCSEC_PER_YEAR) must be generous enough not to
+    exclude it before propagation ever runs.
+    """
+    ra0, dec0 = 150.0, 10.0
+    pm_ra_cosdec, pm_dec = 8000.0, 0.0  # mas/yr = 8"/yr, under the 10.3"/yr safety bound
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec) VALUES (%s, %s, %s, 2016.0, %s, %s)",
+            (900000000000000060, ra0, dec0, pm_ra_cosdec, pm_dec),
+        )
+    conn.commit()
+
+    obs_date = date(2020, 1, 1)
+    obs_jyear = matcher._to_jyear(obs_date)
+
+    # Ground truth: where astropy itself says this star actually is by obs_jyear.
+    base = SkyCoord(
+        ra=ra0 * u.deg, dec=dec0 * u.deg,
+        pm_ra_cosdec=pm_ra_cosdec * u.mas / u.yr, pm_dec=pm_dec * u.mas / u.yr,
+        obstime=Time(2016.0, format="jyear"), frame="icrs",
+    )
+    true_position = base.apply_space_motion(new_obstime=Time(obs_jyear, format="jyear"))
+
+    # Sanity check this scenario actually exercises the pre-filter: the
+    # un-propagated position must be well outside the match radius.
+    raw_sep = SkyCoord(ra=ra0 * u.deg, dec=dec0 * u.deg).separation(true_position).arcsec
+    assert raw_sep > matcher.EASY_MATCH_RADIUS_ARCSEC * 5
+
+    rec = RawObservation(
+        archive_obs_id="pm-1", archive_url="http://example.test/pm1",
+        ra=true_position.ra.deg, dec=true_position.dec.deg,
+        obs_date=obs_date,
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["positional_matched"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT gaia_source_id FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id='pm-1'"
+        )
+        gaia_id = cur.fetchone()[0]
+    assert gaia_id == 900000000000000060
