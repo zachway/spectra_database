@@ -22,8 +22,10 @@ Run against the hosted snapshot (what Cloud Run does):
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 
 import duckdb
+import numpy as np
 from flask import Flask, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
@@ -85,6 +87,21 @@ def _rows_as_dicts(cur: duckdb.DuckDBPyConnection) -> list[dict]:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def _aitoff_project(ra_deg: list[float], dec_deg: list[float]) -> tuple[list[float], list[float]]:
+    """RA/Dec (degrees) -> Aitoff-projection x/y, for an all-sky map. Flips
+    RA so it increases right-to-left, matching the conventional sky-map
+    view (looking up/out at the sky, not down at a map of it)."""
+    ra = np.radians(np.array(ra_deg, dtype=float))
+    dec = np.radians(np.array(dec_deg, dtype=float))
+    lam = np.where(ra > np.pi, ra - 2 * np.pi, ra)
+    lam = -lam
+    alpha = np.arccos(np.cos(dec) * np.cos(lam / 2))
+    sinc_alpha = np.where(alpha == 0, 1.0, np.sin(alpha) / np.where(alpha == 0, 1.0, alpha))
+    x = 2 * np.cos(dec) * np.sin(lam / 2) / sinc_alpha
+    y = np.sin(dec) / sinc_alpha
+    return x.tolist(), y.tolist()
+
+
 def _group_holdings(holdings: list[dict]) -> list[dict]:
     """Collapse repeat observations (common for multi-epoch archives) into
     one group per (archive, instrument) pair — the raw per-row table was
@@ -126,6 +143,8 @@ NAV_HTML = """
   <nav class="tabs">
     <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
     <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
+    <a href="/sky" class="{{ 'active' if active_tab == 'sky' else '' }}">Sky Map</a>
+    <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Time Plots</a>
     <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
   </nav>
@@ -418,6 +437,206 @@ def cmd():
     )
 
 
+SKY_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Sky Map</title>
+  <style>""" + SHARED_STYLE + """
+    #sky-plot { width: 100%; height: 700px; margin-top: 1rem; background: #000; }
+  </style>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <p class="note">An Aitoff-projection all-sky map of a random sample of up to {{ "{:,}".format(sample_size) }} tracked stars — brighter stars (lower G mag) drawn larger, like a real star chart. Click a point to see that star's holdings.</p>
+  {% if x %}
+    <div id="sky-plot"></div>
+    <script>
+      const x = {{ x | tojson }};
+      const y = {{ y | tojson }};
+      const sizes = {{ sizes | tojson }};
+      const sourceIds = {{ source_ids | tojson }};
+      const labels = {{ labels | tojson }};
+      Plotly.newPlot('sky-plot', [{
+        x: x, y: y,
+        text: labels,
+        hovertemplate: '%{text}<extra></extra>',
+        mode: 'markers',
+        type: 'scattergl',
+        marker: { size: sizes, opacity: 0.85, color: '#fff' },
+      }], {
+        paper_bgcolor: '#000', plot_bgcolor: '#000',
+        xaxis: { visible: false, scaleanchor: 'y' },
+        yaxis: { visible: false },
+        hovermode: 'closest',
+      }, { responsive: true });
+      document.getElementById('sky-plot').on('plotly_click', function(data) {
+        const idx = data.points[0].pointIndex;
+        window.location.href = '/?q=' + sourceIds[idx];
+      });
+    </script>
+  {% else %}
+    <p>No stars with position and G magnitude yet.</p>
+  {% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/sky")
+def sky():
+    cur = get_cursor()
+    cur.execute(
+        f"""
+        SELECT gaia_source_id, ra, dec, phot_g_mean_mag, name_aliases, input_name
+        FROM stars
+        WHERE ra IS NOT NULL AND dec IS NOT NULL AND phot_g_mean_mag IS NOT NULL
+        USING SAMPLE {CMD_SAMPLE_SIZE}
+        """
+    )
+    rows = _rows_as_dicts(cur)
+    x, y = _aitoff_project([r["ra"] for r in rows], [r["dec"] for r in rows])
+    # Brighter (lower mag) stars drawn bigger, clipped to a sane pixel range.
+    sizes = [max(1.5, min(10.0, 12.0 - r["phot_g_mean_mag"])) for r in rows]
+    return render_template_string(
+        SKY_TEMPLATE,
+        x=x, y=y, sizes=sizes,
+        source_ids=[str(r["gaia_source_id"]) for r in rows],
+        labels=[_known_as(r) for r in rows],
+        sample_size=CMD_SAMPLE_SIZE,
+        active_tab="sky",
+    )
+
+
+TIMEPLOTS_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Time Plots</title>
+  <style>""" + SHARED_STYLE + """
+    #cumulative-plot, #period-plot { width: 100%; height: 500px; margin-top: 1rem; }
+  </style>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <h2>Cumulative observations — all-time top 5 most-observed stars</h2>
+  <p class="note">Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's plotted here.</p>
+  {% if cumulative_traces %}
+    <div id="cumulative-plot"></div>
+    <script>
+      const traces = {{ cumulative_traces | tojson }}.map(t => ({
+        x: t.x, y: t.y, name: t.label, mode: 'lines', type: 'scatter',
+      }));
+      Plotly.newPlot('cumulative-plot', traces, {
+        xaxis: { title: 'Observation date' },
+        yaxis: { title: 'Cumulative observations' },
+      }, { responsive: true });
+    </script>
+  {% else %}
+    <p>No dated observations yet.</p>
+  {% endif %}
+
+  <hr>
+  <h2>Most-observed star per 6-month period</h2>
+  <p class="note">Fixed 6-month bins, not a true sliding window — whichever star had the most dated observations within each period. Hover a bar to see which star.</p>
+  {% if period_labels %}
+    <div id="period-plot"></div>
+    <script>
+      const periodLabels = {{ period_labels | tojson }};
+      const periodCounts = {{ period_counts | tojson }};
+      const periodStars = {{ period_stars | tojson }};
+      Plotly.newPlot('period-plot', [{
+        x: periodLabels, y: periodCounts,
+        text: periodStars,
+        hovertemplate: '%{text}: %{y} observations<extra></extra>',
+        type: 'bar',
+      }], {
+        xaxis: { title: 'Period' },
+        yaxis: { title: 'Observations (top star)' },
+      }, { responsive: true });
+    </script>
+  {% else %}
+    <p>No dated observations yet.</p>
+  {% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/timeplots")
+def timeplots():
+    cur = get_cursor()
+
+    cur.execute(
+        """
+        SELECT s.gaia_source_id, s.input_name, s.name_aliases, count(*) AS n
+        FROM spectroscopy_holdings h
+        JOIN stars s ON s.gaia_source_id = h.gaia_source_id
+        GROUP BY s.gaia_source_id, s.input_name, s.name_aliases
+        ORDER BY n DESC
+        LIMIT 5
+        """
+    )
+    top5 = _rows_as_dicts(cur)
+    top5_ids = [r["gaia_source_id"] for r in top5]
+    labels_by_id = {r["gaia_source_id"]: _known_as(r) for r in top5}
+
+    cumulative_traces = []
+    if top5_ids:
+        id_list = ",".join(str(i) for i in top5_ids)
+        cur.execute(
+            f"""
+            SELECT gaia_source_id, obs_date
+            FROM spectroscopy_holdings
+            WHERE gaia_source_id IN ({id_list}) AND obs_date IS NOT NULL
+            ORDER BY gaia_source_id, obs_date
+            """
+        )
+        by_star = defaultdict(list)
+        for r in _rows_as_dicts(cur):
+            by_star[r["gaia_source_id"]].append(r["obs_date"])
+        for gid in top5_ids:
+            dates = by_star.get(gid, [])
+            cumulative_traces.append({
+                "label": labels_by_id[gid],
+                "x": [d.isoformat() for d in dates],
+                "y": list(range(1, len(dates) + 1)),
+            })
+
+    cur.execute(
+        """
+        SELECT
+            s.gaia_source_id, s.input_name, s.name_aliases,
+            year(h.obs_date) AS yr,
+            CASE WHEN month(h.obs_date) <= 6 THEN 1 ELSE 2 END AS half,
+            count(*) AS n
+        FROM spectroscopy_holdings h
+        JOIN stars s ON s.gaia_source_id = h.gaia_source_id
+        WHERE h.obs_date IS NOT NULL
+        GROUP BY s.gaia_source_id, s.input_name, s.name_aliases, yr, half
+        """
+    )
+    best_per_period: dict[tuple, dict] = {}
+    for r in _rows_as_dicts(cur):
+        key = (r["yr"], r["half"])
+        if key not in best_per_period or r["n"] > best_per_period[key]["n"]:
+            best_per_period[key] = r
+    period_keys = sorted(best_per_period.keys())
+
+    return render_template_string(
+        TIMEPLOTS_TEMPLATE,
+        cumulative_traces=cumulative_traces,
+        period_labels=[f"{yr} H{half}" for yr, half in period_keys],
+        period_counts=[best_per_period[k]["n"] for k in period_keys],
+        period_stars=[_known_as(best_per_period[k]) for k in period_keys],
+        active_tab="timeplots",
+    )
+
+
 STATS_TEMPLATE = """
 <!doctype html>
 <html>
@@ -472,11 +691,48 @@ STATS_TEMPLATE = """
     <tr><td>{{ r.match_method }}</td><td>{{ "{:,}".format(r.n) }}</td></tr>
     {% endfor %}
   </table>
+
+  <hr>
+  <h2>Nearest tracked stars</h2>
+  <p class="note">By parallax (distance = 1000 / parallax_mas, no error cut applied — treat as approximate).</p>
+  <table>
+    <tr><th>Star</th><th>Distance (pc)</th></tr>
+    {% for r in nearest %}
+    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.2f"|format(r.distance_pc) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <hr>
+  <h2>Fastest movers</h2>
+  <p class="note">By total proper motion. For reference, Barnard's Star (the fastest known) moves ~10,358 mas/yr.</p>
+  <table>
+    <tr><th>Star</th><th>Proper motion (mas/yr)</th></tr>
+    {% for r in fastest_movers %}
+    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.1f"|format(r.total_pm) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <hr>
+  <h2>Rough spectral-type distribution</h2>
+  <p class="note">A simple BP-RP color bucketing, not real spectral classification — that needs actual spectroscopy, not one color index. Illustrative only.</p>
+  <table>
+    {% for r in spectral_types %}
+    <tr>
+      <td style="width: 4rem;">{{ r.bucket }}</td>
+      <td><div style="background: #000; height: 1rem; width: {{ r.pct }}%;"></div></td>
+      <td style="width: 6rem; text-align: right;">{{ "{:,}".format(r.n) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
 </body>
 </html>
 """
 
 TRENDING_YEARS = 5
+
+# Natural OBAFGKM order — GROUP BY doesn't preserve it, so the display order
+# is applied in Python after querying.
+SPECTRAL_BUCKETS = ["O/B (hot)", "A", "F", "G", "K", "M (cool)"]
 
 
 def _known_as(row: dict) -> str:
@@ -538,11 +794,66 @@ def stats():
     cur.execute("SELECT match_method, count(*) AS n FROM spectroscopy_holdings GROUP BY match_method ORDER BY n DESC")
     by_method = _rows_as_dicts(cur)
 
+    cur.execute(
+        """
+        SELECT gaia_source_id, input_name, name_aliases, 1000.0 / parallax AS distance_pc
+        FROM stars
+        WHERE parallax > 0
+        ORDER BY parallax DESC
+        LIMIT 20
+        """
+    )
+    nearest = _rows_as_dicts(cur)
+    for r in nearest:
+        r["known_as"] = _known_as(r)
+
+    cur.execute(
+        """
+        SELECT gaia_source_id, input_name, name_aliases, sqrt(pmra * pmra + pmdec * pmdec) AS total_pm
+        FROM stars
+        WHERE pmra IS NOT NULL AND pmdec IS NOT NULL
+        ORDER BY total_pm DESC
+        LIMIT 20
+        """
+    )
+    fastest_movers = _rows_as_dicts(cur)
+    for r in fastest_movers:
+        r["known_as"] = _known_as(r)
+
+    cur.execute(
+        """
+        SELECT
+            CASE
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.0 THEN 'O/B (hot)'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.3 THEN 'A'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.6 THEN 'F'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.9 THEN 'G'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 1.5 THEN 'K'
+                ELSE 'M (cool)'
+            END AS bucket,
+            count(*) AS n
+        FROM stars
+        WHERE phot_bp_mean_mag IS NOT NULL AND phot_rp_mean_mag IS NOT NULL
+        GROUP BY bucket
+        """
+    )
+    counts_by_bucket = {r["bucket"]: r["n"] for r in _rows_as_dicts(cur)}
+    max_bucket_n = max(counts_by_bucket.values()) if counts_by_bucket else 0
+    spectral_types = [
+        {
+            "bucket": b,
+            "n": counts_by_bucket.get(b, 0),
+            "pct": (counts_by_bucket.get(b, 0) / max_bucket_n * 100) if max_bucket_n else 0,
+        }
+        for b in SPECTRAL_BUCKETS
+    ]
+
     return render_template_string(
         STATS_TEMPLATE,
         most_observed=most_observed, trending=trending, trending_years=TRENDING_YEARS,
         total_stars=total_stars, total_holdings=total_holdings,
         by_archive=by_archive, by_method=by_method,
+        nearest=nearest, fastest_movers=fastest_movers, spectral_types=spectral_types,
         active_tab="stats",
     )
 
@@ -577,6 +888,25 @@ INFO_TEMPLATE = """
   </ul>
 
   <p class="note">See the Stats tab for current holdings-by-archive and matches-by-method breakdowns, and the Search page's Archive status footer for when each archive was last synced.</p>
+
+  <h2>Needs-review queue</h2>
+  <p class="note">Ambiguous positional matches — 2+ tracked stars fell within the 1.0" radius of the archive's reported position, so no single star was assigned. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
+  {% if needs_review %}
+    <table>
+      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th><th>Best separation</th></tr>
+      {% for r in needs_review %}
+      <tr>
+        <td>{{ r.display_name }}</td>
+        <td>{{ r.raw_target_name or "—" }}</td>
+        <td>{{ "%.4f, %.4f"|format(r.raw_ra, r.raw_dec) if r.raw_ra is not none and r.raw_dec is not none else "—" }}</td>
+        <td>{{ r.obs_date or "—" }}</td>
+        <td>{{ '%.2f"'|format(r.theta_arcsec) if r.theta_arcsec is not none else "—" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>None yet.</p>
+  {% endif %}
 </body>
 </html>
 """
@@ -584,7 +914,26 @@ INFO_TEMPLATE = """
 
 @app.route("/info")
 def info():
-    return render_template_string(INFO_TEMPLATE, active_tab="info")
+    cur = get_cursor()
+    cur.execute("SELECT count(*) FROM spectroscopy_holdings WHERE match_status = 'needs_review'")
+    needs_review_total = cur.fetchone()[0]
+
+    cur.execute(
+        """
+        SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.theta_arcsec
+        FROM spectroscopy_holdings h
+        JOIN archives a ON a.archive_code = h.archive_code
+        WHERE h.match_status = 'needs_review'
+        ORDER BY h.updated_at DESC
+        LIMIT 20
+        """
+    )
+    needs_review = _rows_as_dicts(cur)
+
+    return render_template_string(
+        INFO_TEMPLATE, active_tab="info",
+        needs_review=needs_review, needs_review_total=needs_review_total,
+    )
 
 
 def _parse_batch_lines(text: str) -> list[str]:
