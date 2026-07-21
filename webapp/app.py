@@ -444,7 +444,7 @@ SKY_TEMPLATE = """
   <meta charset="utf-8">
   <title>Spectra Database — Sky Map</title>
   <style>""" + SHARED_STYLE + """
-    #sky-plot { width: 100%; height: 700px; margin-top: 1rem; background: #000; }
+    #sky-plot { width: 100%; height: 700px; margin-top: 1rem; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
@@ -465,9 +465,8 @@ SKY_TEMPLATE = """
         hovertemplate: '%{text}<extra></extra>',
         mode: 'markers',
         type: 'scattergl',
-        marker: { size: sizes, opacity: 0.85, color: '#fff' },
+        marker: { size: sizes, opacity: 0.85, color: '#000' },
       }], {
-        paper_bgcolor: '#000', plot_bgcolor: '#000',
         xaxis: { visible: false, scaleanchor: 'y' },
         yaxis: { visible: false },
         hovermode: 'closest',
@@ -523,17 +522,22 @@ TIMEPLOTS_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <h2>Cumulative observations — all-time top 5 most-observed stars</h2>
-  <p class="note">Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's plotted here.</p>
-  {% if cumulative_traces %}
+  <h2>Running leaderboard — all-time top 5 most-observed stars</h2>
+  <p class="note">Rank by cumulative observation count, month by month — lines cross when one star overtakes another. Ranked only among these 5 (the eventual all-time top 5), not the whole catalog at each point in time — cheaper to compute, and a star that led early but fell out of the final top 5 won't appear. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's reflected here.</p>
+  {% if leaderboard_traces %}
     <div id="cumulative-plot"></div>
     <script>
-      const traces = {{ cumulative_traces | tojson }}.map(t => ({
-        x: t.x, y: t.y, name: t.label, mode: 'lines', type: 'scatter',
+      const months = {{ leaderboard_months | tojson }};
+      const traces = {{ leaderboard_traces | tojson }}.map(t => ({
+        x: months, y: t.rank, name: t.label,
+        text: t.count.map(c => t.label + ': ' + c + ' cumulative observations'),
+        hovertemplate: '%{text}<extra></extra>',
+        mode: 'lines+markers', type: 'scatter',
       }));
       Plotly.newPlot('cumulative-plot', traces, {
-        xaxis: { title: 'Observation date' },
-        yaxis: { title: 'Cumulative observations' },
+        xaxis: { title: 'Month' },
+        yaxis: { title: 'Rank (among these 5)', autorange: 'reversed', dtick: 1 },
+        hovermode: 'closest',
       }, { responsive: true });
     </script>
   {% else %}
@@ -585,7 +589,8 @@ def timeplots():
     top5_ids = [r["gaia_source_id"] for r in top5]
     labels_by_id = {r["gaia_source_id"]: _known_as(r) for r in top5}
 
-    cumulative_traces = []
+    leaderboard_months: list[str] = []
+    leaderboard_traces = []
     if top5_ids:
         id_list = ",".join(str(i) for i in top5_ids)
         cur.execute(
@@ -593,19 +598,48 @@ def timeplots():
             SELECT gaia_source_id, obs_date
             FROM spectroscopy_holdings
             WHERE gaia_source_id IN ({id_list}) AND obs_date IS NOT NULL
-            ORDER BY gaia_source_id, obs_date
+            ORDER BY obs_date
             """
         )
-        by_star = defaultdict(list)
-        for r in _rows_as_dicts(cur):
-            by_star[r["gaia_source_id"]].append(r["obs_date"])
-        for gid in top5_ids:
-            dates = by_star.get(gid, [])
-            cumulative_traces.append({
-                "label": labels_by_id[gid],
-                "x": [d.isoformat() for d in dates],
-                "y": list(range(1, len(dates) + 1)),
-            })
+        rows = _rows_as_dicts(cur)
+        if rows:
+            def month_key(d):
+                return d.year * 12 + (d.month - 1)
+
+            start_key = min(month_key(r["obs_date"]) for r in rows)
+            end_key = max(month_key(r["obs_date"]) for r in rows)
+            grid = list(range(start_key, end_key + 1))
+            leaderboard_months = [f"{k // 12}-{k % 12 + 1:02d}" for k in grid]
+
+            # New observations per star per month, then forward-filled into
+            # a running cumulative total at every month in the grid — a
+            # star with no new observations in a given month still holds
+            # its prior total, rather than dropping out of the ranking.
+            new_per_month = {gid: defaultdict(int) for gid in top5_ids}
+            for r in rows:
+                new_per_month[r["gaia_source_id"]][month_key(r["obs_date"])] += 1
+
+            cumulative = {}
+            for gid in top5_ids:
+                running, series = 0, []
+                for k in grid:
+                    running += new_per_month[gid].get(k, 0)
+                    series.append(running)
+                cumulative[gid] = series
+
+            # Rank among just these 5 stars at each month (1 = most observed
+            # so far) — ties broken by gaia_source_id for a stable order.
+            ranks = {gid: [] for gid in top5_ids}
+            for i in range(len(grid)):
+                ordered = sorted(top5_ids, key=lambda gid: (-cumulative[gid][i], gid))
+                rank_by_gid = {gid: rank + 1 for rank, gid in enumerate(ordered)}
+                for gid in top5_ids:
+                    ranks[gid].append(rank_by_gid[gid])
+
+            leaderboard_traces = [
+                {"label": labels_by_id[gid], "rank": ranks[gid], "count": cumulative[gid]}
+                for gid in top5_ids
+            ]
 
     cur.execute(
         """
@@ -629,7 +663,7 @@ def timeplots():
 
     return render_template_string(
         TIMEPLOTS_TEMPLATE,
-        cumulative_traces=cumulative_traces,
+        leaderboard_months=leaderboard_months, leaderboard_traces=leaderboard_traces,
         period_labels=[f"{yr} H{half}" for yr, half in period_keys],
         period_counts=[best_per_period[k]["n"] for k in period_keys],
         period_stars=[_known_as(best_per_period[k]) for k in period_keys],
