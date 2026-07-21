@@ -22,6 +22,13 @@ FROM gaiadr3.gaia_source
 WHERE source_id = {source_id}
 """
 
+GAIA_BATCH_QUERY = """
+SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
+       phot_g_mean_mag, has_rvs, has_xp_continuous
+FROM gaiadr3.gaia_source
+WHERE source_id IN ({id_list})
+"""
+
 GAIA_CONE_QUERY = """
 SELECT source_id
 FROM gaiadr3.gaia_source
@@ -161,6 +168,143 @@ def add_star(conn: psycopg.Connection, gaia_source_id: int, input_name: str | No
 def add_star_by_name(conn: psycopg.Connection, name: str) -> dict:
     gaia_source_id = resolve_gaia_source_id(name)
     return add_star(conn, gaia_source_id, input_name=name)
+
+
+BATCH_CHUNK_SIZE = 500
+
+
+def add_stars_batch(
+    conn: psycopg.Connection,
+    gaia_source_ids: list[int],
+    known_aliases: dict[int, list[str]] | None = None,
+) -> int:
+    """Add many stars in a handful of batched Gaia TAP queries instead of one
+    call per star — add_star() itself is a live TAP round trip each time,
+    which doesn't scale past a few dozen stars. Used for bulk-seeding a local
+    test dataset directly from archive query results.
+
+    Does NOT fetch SIMBAD's full alias list per star (that's one more live
+    call each — fine for a single add_star(), not for thousands at once).
+    known_aliases lets a caller who already resolved a star by name (e.g. via
+    resolve_stellar_gaia_ids_batch) pass that specific name through so it
+    gets cached — cheap, no extra API call, and it's what lets
+    sync.matcher's name-priority-over-position path actually apply to these
+    stars instead of falling through to a positional check that can
+    spuriously fail (archive-reported coordinates are sometimes from a
+    different physical instrument — e.g. the finder/acquisition camera —
+    and can be off by arcminutes even when the name is correct). Merges with
+    any aliases already cached rather than overwriting. Returns the number
+    of stars actually inserted/updated.
+    """
+    unique_ids = sorted(set(gaia_source_ids))
+    if not unique_ids:
+        return 0
+    known_aliases = known_aliases or {}
+
+    total = 0
+    for i in range(0, len(unique_ids), BATCH_CHUNK_SIZE):
+        chunk = unique_ids[i : i + BATCH_CHUNK_SIZE]
+        id_list = ",".join(str(sid) for sid in chunk)
+        job = Gaia.launch_job(GAIA_BATCH_QUERY.format(id_list=id_list))
+        table = job.get_results()
+
+        with conn.cursor() as cur:
+            for row in table:
+                gaia_source_id = int(row["source_id"])
+                star = {
+                    "gaia_source_id": gaia_source_id,
+                    "ra": float(row["ra"]),
+                    "dec": float(row["dec"]),
+                    "ref_epoch": float(row["ref_epoch"]),
+                    "pmra": clean_float(row["pmra"]),
+                    "pmdec": clean_float(row["pmdec"]),
+                    "parallax": clean_float(row["parallax"]),
+                    "phot_g_mean_mag": clean_float(row["phot_g_mean_mag"]),
+                    "has_rvs": bool(row["has_rvs"]),
+                    "has_xp_continuous": bool(row["has_xp_continuous"]),
+                    "input_name": None,
+                    "name_aliases": known_aliases.get(gaia_source_id) or None,
+                }
+                cur.execute(
+                    """
+                    INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec,
+                                        parallax, phot_g_mean_mag, has_gaia_rvs, has_xp_continuous,
+                                        input_name, name_aliases)
+                    VALUES (%(gaia_source_id)s, %(ra)s, %(dec)s, %(ref_epoch)s, %(pmra)s,
+                            %(pmdec)s, %(parallax)s, %(phot_g_mean_mag)s, %(has_rvs)s, %(has_xp_continuous)s,
+                            %(input_name)s, %(name_aliases)s)
+                    ON CONFLICT (gaia_source_id) DO UPDATE SET
+                        name_aliases = ARRAY(
+                            SELECT DISTINCT UNNEST(
+                                COALESCE(stars.name_aliases, ARRAY[]::TEXT[])
+                                || COALESCE(EXCLUDED.name_aliases, ARRAY[]::TEXT[])
+                            )
+                        )
+                    """,
+                    star,
+                )
+                if star["has_rvs"]:
+                    cur.execute(
+                        """
+                        INSERT INTO spectroscopy_holdings
+                            (gaia_source_id, archive_code, archive_obs_id, archive_url,
+                             instrument, match_method, match_status)
+                        VALUES (%(gaia_source_id)s, 'gaia_rvs', %(archive_obs_id)s, %(archive_url)s,
+                                'Gaia RVS', 'direct_gaia_column', 'matched')
+                        ON CONFLICT (archive_code, archive_obs_id) DO NOTHING
+                        """,
+                        {
+                            "gaia_source_id": star["gaia_source_id"],
+                            "archive_obs_id": str(star["gaia_source_id"]),
+                            "archive_url": RVS_DEEP_LINK.format(source_id=star["gaia_source_id"]),
+                        },
+                    )
+                total += 1
+        conn.commit()
+
+    return total
+
+
+SIMBAD_BATCH_CHUNK_SIZE = 300
+
+
+def resolve_stellar_gaia_ids_batch(names: list[str]) -> dict[str, int]:
+    """Batch-resolve names to Gaia DR3 source_ids, keeping only SIMBAD-confirmed
+    stars: SIMBAD's object-type codes for stars all end in '*' (e.g. '*',
+    'PM*', 'WD*', 'SB*'), while non-stellar types don't ('AGN', 'G', 'OpC',
+    'BLL', ...) — live-verified against Proxima Centauri, M31, 3C 273,
+    Sirius B, TRAPPIST-1, the Pleiades, and NGC 1.
+
+    Used when bulk-seeding tracked stars from an archive's raw target_name
+    field, where a full resolve_gaia_source_id() per name (with its
+    cone-search fallback) would be too slow at this volume — SIMBAD-or-
+    nothing here, no fallback.
+    """
+    unique_names = sorted({n for n in names if n})
+    if not unique_names:
+        return {}
+
+    resolved: dict[str, int] = {}
+    for i in range(0, len(unique_names), SIMBAD_BATCH_CHUNK_SIZE):
+        chunk = unique_names[i : i + SIMBAD_BATCH_CHUNK_SIZE]
+        simbad = Simbad()
+        simbad.add_votable_fields("ids", "otype")
+        result = simbad.query_objects(chunk)
+        if result is None:
+            continue
+        for row in result:
+            otype = row["otype"]
+            if otype is None or not str(otype).strip().endswith("*"):
+                continue
+            ids_field = row["ids"]
+            if ids_field is None:
+                continue
+            gaia_tokens = [tok for tok in str(ids_field).split("|") if tok.startswith("Gaia DR3 ")]
+            if not gaia_tokens:
+                continue
+            queried_name = str(row["user_specified_id"]).strip()
+            resolved[queried_name] = int(gaia_tokens[0].removeprefix("Gaia DR3 "))
+    return resolved
 
 
 def main() -> None:

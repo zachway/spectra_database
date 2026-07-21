@@ -3,3 +3,4 @@ astropy
 psycopg[binary]
 beautifulsoup4
 requests
+flask
