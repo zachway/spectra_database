@@ -27,9 +27,7 @@ import duckdb
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Just the tables webapp.app actually queries — archive_sync_state is
-# internal sync-operational state, no reason to serve it publicly.
-TABLES = ["stars", "archives", "spectroscopy_holdings"]
+TABLES = ["stars", "archives", "spectroscopy_holdings", "archive_sync_state"]
 
 
 def export_tables(database_url: str, out_dir: str) -> None:

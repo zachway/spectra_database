@@ -37,11 +37,11 @@ app = Flask(__name__)
 # query — per project to-do, laptop/small-server scale, not a bulk pipeline.
 MAX_NAME_LOOKUPS = 2000
 
-DATA_TABLES = ("stars", "archives", "spectroscopy_holdings")
+DATA_TABLES = ("stars", "archives", "spectroscopy_holdings", "archive_sync_state")
 
 
 def _resolve_data_source() -> str:
-    """Base path or URL containing {stars,archives,spectroscopy_holdings}.parquet."""
+    """Base path or URL containing the DATA_TABLES parquet files."""
     url = os.environ.get("SPECTRA_DATA_URL")
     if url:
         return url.rstrip("/")
@@ -85,6 +85,34 @@ def _rows_as_dicts(cur: duckdb.DuckDBPyConnection) -> list[dict]:
     return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def _group_holdings(holdings: list[dict]) -> list[dict]:
+    """Collapse repeat observations (common for multi-epoch archives) into
+    one group per (archive, instrument) pair — the raw per-row table was
+    unreadable for stars with many visits."""
+    groups: dict[tuple, dict] = {}
+    order = []
+    for h in holdings:
+        key = (h["display_name"], h["instrument"])
+        if key not in groups:
+            groups[key] = {"display_name": h["display_name"], "instrument": h["instrument"], "observations": []}
+            order.append(key)
+        groups[key]["observations"].append(h)
+    return [groups[k] for k in order]
+
+
+def _archive_status() -> list[dict]:
+    cur = get_cursor()
+    cur.execute(
+        """
+        SELECT a.display_name, s.last_run_at, s.last_run_status
+        FROM archives a
+        LEFT JOIN archive_sync_state s ON s.archive_code = a.archive_code
+        ORDER BY a.display_name
+        """
+    )
+    return _rows_as_dicts(cur)
+
+
 PAGE_TEMPLATE = """
 <!doctype html>
 <html>
@@ -102,6 +130,9 @@ PAGE_TEMPLATE = """
     .note { font-style: italic; }
     textarea { width: 100%; font-family: monospace; }
     hr { margin: 2rem 0; border: none; border-top: 1px solid #000; }
+    details { border: 1px solid #000; margin-top: 0.5rem; padding: 0.3rem 0.5rem; }
+    details table { margin-top: 0.3rem; }
+    summary { cursor: pointer; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -128,18 +159,21 @@ PAGE_TEMPLATE = """
     </dl>
 
     {% if holdings %}
-      <table>
-        <tr><th>Archive</th><th>Instrument</th><th>Date</th><th>Match</th><th>Link</th></tr>
-        {% for h in holdings %}
-        <tr>
-          <td>{{ h.display_name }}</td>
-          <td>{{ h.instrument or "—" }}</td>
-          <td>{{ h.obs_date or "—" }}</td>
-          <td>{{ h.match_status }}</td>
-          <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
-        </tr>
-        {% endfor %}
-      </table>
+      {% for g in holdings %}
+      <details{% if holdings|length == 1 %} open{% endif %}>
+        <summary>{{ g.display_name }} — {{ g.instrument or "—" }} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
+        <table>
+          <tr><th>Date</th><th>Match</th><th>Link</th></tr>
+          {% for h in g.observations %}
+          <tr>
+            <td>{{ h.obs_date or "—" }}</td>
+            <td>{{ h.match_status }}</td>
+            <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
+          </tr>
+          {% endfor %}
+        </table>
+      </details>
+      {% endfor %}
     {% else %}
       <p>No spectroscopy holdings found for this star yet.</p>
     {% endif %}
@@ -177,6 +211,19 @@ PAGE_TEMPLATE = """
       {% endfor %}
     </table>
   {% endif %}
+
+  <hr>
+  <h2>Archive status</h2>
+  <table>
+    <tr><th>Archive</th><th>Last updated</th><th>Status</th></tr>
+    {% for a in archive_status %}
+    <tr>
+      <td>{{ a.display_name }}</td>
+      <td>{{ a.last_run_at or "never" }}</td>
+      <td>{{ a.last_run_status or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
 </body>
 </html>
 """
@@ -188,6 +235,7 @@ def _blank(query=None, error=None, resolved_source_id=None):
         error=error, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
+        archive_status=_archive_status(),
     )
 
 
@@ -197,6 +245,7 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
+        archive_status=_archive_status(),
     )
 
 
@@ -238,17 +287,18 @@ def search():
         FROM spectroscopy_holdings h
         JOIN archives a ON a.archive_code = h.archive_code
         WHERE h.gaia_source_id = ?
-        ORDER BY a.display_name, h.obs_date
+        ORDER BY a.display_name, h.instrument, h.obs_date
         """,
         [source_id],
     )
-    holdings = _rows_as_dicts(cur)
+    holdings = _group_holdings(_rows_as_dicts(cur))
 
     return render_template_string(
         PAGE_TEMPLATE, query=query, star=star, holdings=holdings,
         error=None, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
+        archive_status=_archive_status(),
     )
 
 
