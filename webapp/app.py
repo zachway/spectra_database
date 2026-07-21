@@ -121,8 +121,9 @@ PAGE_TEMPLATE = """
   <title>Spectra Database</title>
   <style>
     body { font-family: monospace; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #000; background: #fff; }
-    dt { font-weight: bold; float: left; width: 140px; clear: left; }
-    dd { margin-left: 140px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
+    dt { font-weight: bold; }
+    dd { margin: 0; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #000; }
     a { color: #000; }
