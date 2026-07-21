@@ -2,22 +2,14 @@
 seed a real, populated local test database — for laptop-scale testing (see
 project to-do list), not a production sync (see sync.main for that).
 
-Unlike sync.main, this does NOT require stars to already be tracked. It
-discovers new tracked stars directly from each archive's own query results:
-
-- Archives with a native Gaia column (or that resolve one internally, like
-  carmenes.py): every returned row's gaia_source_id is trusted as a star
-  outright (Gaia's own catalog is the "is this real" check already).
-- Archives without one (eso, cfht_cadc, gemini, koa, mast, noirlab,
-  sdss_legacy_optical): unique non-blank target_name values are batch-
-  resolved via SIMBAD and kept only if SIMBAD's object type is stellar
-  (code ends in "*" — see ingest.add_star.resolve_stellar_gaia_ids_batch).
-  Rows with no usable name are left to positional matching against
-  whatever's already tracked, same as a normal sync.
-
-Both star-discovery paths are batched (a handful of Gaia/SIMBAD round trips
-per archive, not one per row) — this is what makes ~2000 rows x 14 archives
-tractable at all.
+Star discovery (ingest.add_star.discover_stars, shared with sync.runner so
+production syncs and this seeder can't diverge in what counts as a new
+star) is batched — a handful of Gaia/SIMBAD round trips per archive, not one
+per row — which is what makes ~2000 rows x 14 archives tractable at all in
+one run. The --limit flag exists only to keep that batch small for fast
+local testing; sync.main has no such cap and relies on discover_stars
+scaling incrementally, one page at a time, as it converges through each
+archive's full history.
 
 Usage:
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.seed_small_test_data --limit 2000
@@ -29,7 +21,7 @@ import os
 
 import psycopg
 
-from ingest.add_star import add_stars_batch, resolve_stellar_gaia_ids_batch
+from ingest.add_star import discover_stars
 from sync import matcher
 from sync.archives import (
     carmenes,
@@ -130,44 +122,10 @@ def _fetch_records(archive_code: str, module, limit: int) -> list:
 def seed_archive(conn: psycopg.Connection, archive_code: str, module, limit: int) -> dict:
     records = _fetch_records(archive_code, module, limit)
 
-    known_aliases: dict[int, list[str]] = {}
-
-    # Records that already carry a Gaia id (native column, or resolved
-    # internally like carmenes.py) can still carry a useful raw_target_name
-    # alongside it — cache that too, don't just add the star anonymously.
-    direct = [r for r in records if r.gaia_source_id is not None]
-    for r in direct:
-        if r.raw_target_name:
-            known_aliases.setdefault(r.gaia_source_id, []).append(r.raw_target_name)
-
-    unnamed = [r for r in records if r.gaia_source_id is None]
-    names = [r.raw_target_name for r in unnamed if r.raw_target_name]
-    name_to_gaia: dict[str, int] = {}
-    if names:
-        try:
-            name_to_gaia = resolve_stellar_gaia_ids_batch(names)
-        except Exception:
-            # SIMBAD outages happen (confirmed live during this project) —
-            # degrade to direct-Gaia-only + positional matching against
-            # whatever's already tracked, rather than losing the whole
-            # archive's fetch to one dependency being briefly down.
-            logger.warning("%s: SIMBAD resolution failed, continuing without it", archive_code, exc_info=True)
-    for name, gaia_id in name_to_gaia.items():
-        known_aliases.setdefault(gaia_id, []).append(name)
-
-    all_ids = [r.gaia_source_id for r in direct] + list(name_to_gaia.values())
-    stars_added = add_stars_batch(conn, all_ids, known_aliases=known_aliases)
+    stars_added = discover_stars(conn, archive_code, records)
 
     counts = matcher.match_records(conn, archive_code, records)
-    logger.info(
-        "%s: fetched %d rows, %d new stars, %d/%d unique names SIMBAD-confirmed as stellar -> %s",
-        archive_code,
-        len(records),
-        stars_added,
-        len(name_to_gaia),
-        len(set(names)),
-        counts,
-    )
+    logger.info("%s: fetched %d rows, %d new stars -> %s", archive_code, len(records), stars_added, counts)
     return {"rows_fetched": len(records), "stars_added": stars_added, **counts}
 
 

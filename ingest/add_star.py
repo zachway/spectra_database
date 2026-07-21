@@ -9,13 +9,16 @@ archive sync needed for that one.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 
 import psycopg
 from astroquery.gaia import Gaia
 from astroquery.simbad import Simbad
 
-from sync.base import clean_float
+from sync.base import RawObservation, clean_float
+
+logger = logging.getLogger(__name__)
 
 GAIA_QUERY = """
 SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
@@ -307,6 +310,46 @@ def resolve_stellar_gaia_ids_batch(names: list[str]) -> dict[str, int]:
             queried_name = str(row["user_specified_id"]).strip()
             resolved[queried_name] = int(gaia_tokens[0].removeprefix("Gaia DR3 "))
     return resolved
+
+
+def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> int:
+    """Track any new stars a batch of archive records reveals, before matching.
+
+    Same discovery rule for every archive: a record with its own Gaia
+    source_id is trusted outright (Gaia's own catalog is the "is this real"
+    check already); a record with only a raw_target_name gets that name
+    batch-resolved via SIMBAD and kept only if SIMBAD calls it stellar (see
+    resolve_stellar_gaia_ids_batch). Records with neither are left for
+    sync.matcher's positional fallback against whatever's already tracked.
+
+    Shared between sync.runner (incremental production syncs) and
+    scripts.seed_small_test_data (one-off bulk seeding) so the two can't
+    silently diverge in what counts as a new star.
+    """
+    known_aliases: dict[int, list[str]] = {}
+
+    direct = [r for r in records if r.gaia_source_id is not None]
+    for r in direct:
+        if r.raw_target_name:
+            known_aliases.setdefault(r.gaia_source_id, []).append(r.raw_target_name)
+
+    unnamed = [r for r in records if r.gaia_source_id is None]
+    names = [r.raw_target_name for r in unnamed if r.raw_target_name]
+    name_to_gaia: dict[str, int] = {}
+    if names:
+        try:
+            name_to_gaia = resolve_stellar_gaia_ids_batch(names)
+        except Exception:
+            # SIMBAD outages happen (confirmed live during this project) —
+            # degrade to direct-Gaia-only + positional matching against
+            # whatever's already tracked, rather than losing the whole
+            # sync page to one dependency being briefly down.
+            logger.warning("%s: SIMBAD resolution failed during star discovery, continuing without it", archive_code, exc_info=True)
+    for name, gaia_id in name_to_gaia.items():
+        known_aliases.setdefault(gaia_id, []).append(name)
+
+    all_ids = [r.gaia_source_id for r in direct] + list(name_to_gaia.values())
+    return add_stars_batch(conn, all_ids, known_aliases=known_aliases)
 
 
 def main() -> None:
