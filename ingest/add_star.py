@@ -15,10 +15,20 @@ import os
 import psycopg
 from astroquery.gaia import Gaia
 from astroquery.simbad import Simbad
+from astroquery.simbad import conf as simbad_conf
 
 from sync.base import RawObservation, clean_float
 
 logger = logging.getLogger(__name__)
+
+# astroquery's SIMBAD default (1080s / 18min) is meant for legitimately slow
+# async queries, but it also governs the read that can just stall mid-
+# response — confirmed live: a sync run sat blocked for 9+ minutes and
+# counting inside Simbad.query_objects with no data coming through, no
+# exception raised to trigger the SIMBAD-outage handling already in
+# discover_stars below. A much shorter timeout turns a stall into a caught,
+# recoverable exception instead of an indefinite hang.
+simbad_conf.timeout = 30
 
 GAIA_QUERY = """
 SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,

@@ -113,13 +113,24 @@ def _archive_status() -> list[dict]:
     return _rows_as_dicts(cur)
 
 
-PAGE_TEMPLATE = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Spectra Database</title>
-  <style>
+# Cap on how many stars the CMD plots as individually-clickable points — the
+# catalog is 1.4M+ and growing toward several million, so shipping every
+# star to the browser would mean an ever-growing multi-MB payload and more
+# points than any charting library renders interactively without WebGL
+# trouble. A bounded random sample keeps the page fast regardless of catalog
+# size; USING SAMPLE applies after the WHERE filter, not before, so this is
+# a sample of valid points, not valid points among a sample of everything.
+CMD_SAMPLE_SIZE = 30000
+
+NAV_HTML = """
+  <nav class="tabs">
+    <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
+    <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
+    <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
+  </nav>
+"""
+
+SHARED_STYLE = """
     body { font-family: monospace; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #000; background: #fff; }
     dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
     dt { font-weight: bold; }
@@ -134,10 +145,22 @@ PAGE_TEMPLATE = """
     details { border: 1px solid #000; margin-top: 0.5rem; padding: 0.3rem 0.5rem; }
     details table { margin-top: 0.3rem; }
     summary { cursor: pointer; font-weight: bold; }
-  </style>
+    nav.tabs { display: flex; gap: 0; border-bottom: 1px solid #000; margin-bottom: 1.5rem; }
+    nav.tabs a { text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #000; border-bottom: none;
+                 margin-right: 0.3rem; color: #000; }
+    nav.tabs a.active { font-weight: bold; background: #000; color: #fff; }
+"""
+
+PAGE_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database</title>
+  <style>""" + SHARED_STYLE + """</style>
 </head>
 <body>
-  <h1>Spectra Database</h1>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
   <p class="note">Matches come from three methods: archives that carry their own Gaia source_id are matched directly (most reliable); otherwise matching falls back to resolving the archive's reported name via SIMBAD, or to position (RA/Dec) when no usable name is given. Name- and position-based matches are not guaranteed correct — ambiguous names, mistaken identifications, and crowded or close-binary fields can produce a wrong match. Each observation's "Match" status ("matched" vs "needs_review") reflects this — treat "needs_review" as unconfirmed.</p>
   <form method="get" action="">
     <input type="text" name="q" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
@@ -240,6 +263,7 @@ def _blank(query=None, error=None, resolved_source_id=None):
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
         archive_status=_archive_status(),
+        active_tab="search",
     )
 
 
@@ -250,6 +274,7 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
         archive_status=_archive_status(),
+        active_tab="search",
     )
 
 
@@ -303,6 +328,204 @@ def search():
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
         archive_status=_archive_status(),
+        active_tab="search",
+    )
+
+
+CMD_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Color-Magnitude Diagram</title>
+  <style>""" + SHARED_STYLE + """
+    #cmd-plot { width: 100%; height: 700px; margin-top: 1rem; }
+  </style>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <p class="note">Gaia color-magnitude diagram — a random sample of up to {{ "{:,}".format(sample_size) }} tracked stars with valid BP-RP color and a positive parallax (needed for absolute magnitude). Click a point to see that star's holdings.</p>
+  {% if bp_rp %}
+    <div id="cmd-plot"></div>
+    <script>
+      const bpRp = {{ bp_rp | tojson }};
+      const absGMag = {{ abs_g_mag | tojson }};
+      const sourceIds = {{ source_ids | tojson }};
+      Plotly.newPlot('cmd-plot', [{
+        x: bpRp,
+        y: absGMag,
+        mode: 'markers',
+        type: 'scattergl',
+        marker: { size: 3, opacity: 0.5, color: bpRp, colorscale: 'RdYlBu', reversescale: true },
+      }], {
+        xaxis: { title: 'BP - RP (mag)' },
+        yaxis: { title: 'Absolute G magnitude', autorange: 'reversed' },
+        hovermode: 'closest',
+      }, { responsive: true });
+      document.getElementById('cmd-plot').on('plotly_click', function(data) {
+        const idx = data.points[0].pointIndex;
+        window.location.href = '/?q=' + sourceIds[idx];
+      });
+    </script>
+  {% else %}
+    <p>No stars with both BP/RP photometry and a positive parallax yet.</p>
+  {% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/cmd")
+def cmd():
+    cur = get_cursor()
+    cur.execute(
+        f"""
+        SELECT gaia_source_id, phot_bp_mean_mag - phot_rp_mean_mag AS bp_rp,
+               phot_g_mean_mag + 5 * log10(parallax) - 10 AS abs_g_mag
+        FROM stars
+        WHERE phot_bp_mean_mag IS NOT NULL AND phot_rp_mean_mag IS NOT NULL
+          AND phot_g_mean_mag IS NOT NULL AND parallax > 0
+        USING SAMPLE {CMD_SAMPLE_SIZE}
+        """
+    )
+    rows = _rows_as_dicts(cur)
+    return render_template_string(
+        CMD_TEMPLATE,
+        bp_rp=[r["bp_rp"] for r in rows],
+        abs_g_mag=[r["abs_g_mag"] for r in rows],
+        source_ids=[r["gaia_source_id"] for r in rows],
+        sample_size=CMD_SAMPLE_SIZE,
+        active_tab="cmd",
+    )
+
+
+STATS_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Stats</title>
+  <style>""" + SHARED_STYLE + """</style>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <dl>
+    <dt>Tracked stars</dt><dd>{{ "{:,}".format(total_stars) }}</dd>
+    <dt>Spectroscopy holdings</dt><dd>{{ "{:,}".format(total_holdings) }}</dd>
+  </dl>
+
+  <hr>
+  <h2>Most observed stars</h2>
+  <table>
+    <tr><th>Star</th><th>Observations</th></tr>
+    {% for r in most_observed %}
+    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <hr>
+  <h2>Trending — most observed in the last {{ trending_years }} years</h2>
+  {% if trending %}
+    <table>
+      <tr><th>Star</th><th>Observations</th></tr>
+      {% for r in trending %}
+      <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="note">Nothing in the last {{ trending_years }} years yet — most tracked holdings are decades-old archival spectra, and the bulk direct-Gaia-column archives (DESI, SDSS-V) don't carry per-observation dates at all, so "trending" will stay sparse until enough recently-dated archives (ESO, MAST, KOA, NOIRLab) are synced.</p>
+  {% endif %}
+
+  <hr>
+  <h2>Holdings by archive</h2>
+  <table>
+    <tr><th>Archive</th><th>Holdings</th></tr>
+    {% for r in by_archive %}
+    <tr><td>{{ r.display_name }}</td><td>{{ "{:,}".format(r.n) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <hr>
+  <h2>Matches by method</h2>
+  <table>
+    <tr><th>Method</th><th>Count</th></tr>
+    {% for r in by_method %}
+    <tr><td>{{ r.match_method }}</td><td>{{ "{:,}".format(r.n) }}</td></tr>
+    {% endfor %}
+  </table>
+</body>
+</html>
+"""
+
+TRENDING_YEARS = 5
+
+
+def _known_as(row: dict) -> str:
+    if row.get("name_aliases"):
+        return row["name_aliases"][0]
+    return row.get("input_name") or str(row["gaia_source_id"])
+
+
+@app.route("/stats")
+def stats():
+    cur = get_cursor()
+
+    cur.execute(
+        """
+        SELECT s.gaia_source_id, s.input_name, s.name_aliases, count(*) AS n
+        FROM spectroscopy_holdings h
+        JOIN stars s ON s.gaia_source_id = h.gaia_source_id
+        GROUP BY s.gaia_source_id, s.input_name, s.name_aliases
+        ORDER BY n DESC
+        LIMIT 20
+        """
+    )
+    most_observed = _rows_as_dicts(cur)
+    for r in most_observed:
+        r["known_as"] = _known_as(r)
+
+    cur.execute(
+        f"""
+        SELECT s.gaia_source_id, s.input_name, s.name_aliases, count(*) AS n
+        FROM spectroscopy_holdings h
+        JOIN stars s ON s.gaia_source_id = h.gaia_source_id
+        WHERE h.obs_date >= CURRENT_DATE - INTERVAL {TRENDING_YEARS} YEAR
+        GROUP BY s.gaia_source_id, s.input_name, s.name_aliases
+        ORDER BY n DESC
+        LIMIT 20
+        """
+    )
+    trending = _rows_as_dicts(cur)
+    for r in trending:
+        r["known_as"] = _known_as(r)
+
+    cur.execute("SELECT count(*) FROM stars")
+    total_stars = cur.fetchone()[0]
+
+    cur.execute("SELECT count(*) FROM spectroscopy_holdings")
+    total_holdings = cur.fetchone()[0]
+
+    cur.execute(
+        """
+        SELECT a.display_name, count(*) AS n
+        FROM spectroscopy_holdings h
+        JOIN archives a ON a.archive_code = h.archive_code
+        GROUP BY a.display_name
+        ORDER BY n DESC
+        """
+    )
+    by_archive = _rows_as_dicts(cur)
+
+    cur.execute("SELECT match_method, count(*) AS n FROM spectroscopy_holdings GROUP BY match_method ORDER BY n DESC")
+    by_method = _rows_as_dicts(cur)
+
+    return render_template_string(
+        STATS_TEMPLATE,
+        most_observed=most_observed, trending=trending, trending_years=TRENDING_YEARS,
+        total_stars=total_stars, total_holdings=total_holdings,
+        by_archive=by_archive, by_method=by_method,
+        active_tab="stats",
     )
 
 
