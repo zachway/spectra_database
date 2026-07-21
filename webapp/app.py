@@ -166,11 +166,12 @@ PAGE_TEMPLATE = """
       <details{% if holdings|length == 1 %} open{% endif %}>
         <summary>{{ g.display_name }} — {{ g.instrument or "—" }} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
         <table>
-          <tr><th>Date</th><th>Match</th><th>Link</th></tr>
+          <tr><th>Date</th><th>Match</th><th>Method</th><th>Link</th></tr>
           {% for h in g.observations %}
           <tr>
             <td>{{ h.obs_date or "—" }}</td>
             <td>{{ h.match_status }}</td>
+            <td>{{ h.match_method }}</td>
             <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
           </tr>
           {% endfor %}
