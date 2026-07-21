@@ -25,10 +25,9 @@ cgi-bin/getKOA/nph-getKOA?filehand=... resolves to real FITS bytes (despite
 a misleading text/html content-type header).
 """
 
-import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float
+from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "https://koa.ipac.caltech.edu/TAP"
 
@@ -47,7 +46,7 @@ DOWNLOAD_URL = "https://koa.ipac.caltech.edu/cgi-bin/getKOA/nph-getKOA?filehand=
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_mjd = cursor.get("last_mjd", 0)
 
-    tap = pyvo.dal.TAPService(TAP_URL)
+    tap = make_tap_service(TAP_URL)
     query = QUERY.format(page_size=PAGE_SIZE, last_mjd=last_mjd)
     table = tap.search(query, maxrec=PAGE_SIZE).to_table()
 

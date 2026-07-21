@@ -9,10 +9,9 @@ live-growing table), so this mostly matters for re-runs after a future DR.
 """
 
 import numpy as np
-import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation
+from sync.base import RawObservation, make_tap_service
 
 TAP_URL = "https://datacentral.org.au/vo/tap"
 
@@ -34,7 +33,7 @@ DEEP_LINK = (
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_mjd = cursor.get("last_mjd", 0)
 
-    tap = pyvo.dal.TAPService(TAP_URL)
+    tap = make_tap_service(TAP_URL)
     table = tap.search(QUERY.format(last_mjd=last_mjd)).to_table()
 
     records = []

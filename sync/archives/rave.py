@@ -8,10 +8,9 @@ a fraction.
 """
 
 import numpy as np
-import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation
+from sync.base import RawObservation, make_tap_service
 
 TAP_URL = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap"
 
@@ -29,7 +28,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     if cursor.get("synced_at"):
         return [], cursor
 
-    tap = pyvo.dal.TAPService(TAP_URL)
+    tap = make_tap_service(TAP_URL)
     table = tap.search(QUERY).to_table()
 
     records = []

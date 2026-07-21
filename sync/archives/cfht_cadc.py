@@ -39,10 +39,9 @@ crash the matcher's KD-tree build outright.
 
 from urllib.parse import quote
 
-import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float
+from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus"
 
@@ -62,7 +61,7 @@ DATALINK_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink?ID
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_t_min = cursor.get("last_t_min", 0)
 
-    tap = pyvo.dal.TAPService(TAP_URL)
+    tap = make_tap_service(TAP_URL)
     query = QUERY.format(page_size=PAGE_SIZE, last_t_min=last_t_min)
     table = tap.search(query, maxrec=PAGE_SIZE).to_table()
 

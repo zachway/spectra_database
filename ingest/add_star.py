@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import socket
 
 import psycopg
 from astroquery.gaia import Gaia
@@ -29,6 +30,20 @@ logger = logging.getLogger(__name__)
 # discover_stars below. A much shorter timeout turns a stall into a caught,
 # recoverable exception instead of an indefinite hang.
 simbad_conf.timeout = 30
+
+# Gaia.launch_job has no equivalent knob at all — astroquery's Gaia TAP
+# client (astroquery.utils.tap.core.TapPlus) builds a raw
+# http.client.HTTPSConnection with no timeout argument, not requests and not
+# a session that could be swapped out (see sync.base.make_tap_service for
+# the pyvo case, which does support one). This is used on every single star
+# registration across every archive, so a stall here is the highest-value
+# one to guard against. socket.setdefaulttimeout() is the standard fallback
+# for exactly this situation — confirmed live it reaches Gaia's connection
+# and raises promptly. Doesn't affect Postgres (psycopg/libpq manages its
+# own sockets in C, not through Python's socket module) or any requests-
+# based call in this codebase (they already pass explicit timeouts, which
+# take precedence over this global default).
+socket.setdefaulttimeout(180)
 
 GAIA_QUERY = """
 SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,

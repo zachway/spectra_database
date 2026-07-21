@@ -27,10 +27,9 @@ wrong). Filtered via clean_float + dropping records with no position, same
 as the existing ra/dec-required check in sync.matcher.
 """
 
-import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float
+from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom"
 
@@ -48,7 +47,7 @@ PAGE_SIZE = 20000
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_t_min = cursor.get("last_t_min", 0)
 
-    tap = pyvo.dal.TAPService(TAP_URL)
+    tap = make_tap_service(TAP_URL)
     query = QUERY.format(page_size=PAGE_SIZE, last_t_min=last_t_min)
     table = tap.search(query, maxrec=PAGE_SIZE).to_table()
 

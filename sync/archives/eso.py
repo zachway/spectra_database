@@ -11,10 +11,9 @@ clean_float rather than a bare float(), which would otherwise turn a masked
 value into NaN and crash the matcher's KD-tree build outright.
 """
 
-import pyvo
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float
+from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "http://archive.eso.org/tap_obs"
 
@@ -36,7 +35,7 @@ DATASET_LANDING_PAGE = "https://archive.eso.org/dataset/{dp_id}"
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_t_min = cursor.get("last_t_min", 0)
 
-    tap = pyvo.dal.TAPService(TAP_URL)
+    tap = make_tap_service(TAP_URL)
     query = QUERY.format(last_t_min=last_t_min, page_size=PAGE_SIZE)
     # pyvo defaults maxrec to ~20000 regardless of the ADQL TOP clause —
     # confirmed live (DALOverflowWarning) — so it must be set explicitly.
