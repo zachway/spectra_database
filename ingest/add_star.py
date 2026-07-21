@@ -22,14 +22,14 @@ logger = logging.getLogger(__name__)
 
 GAIA_QUERY = """
 SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
-       phot_g_mean_mag, has_rvs, has_xp_continuous
+       phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag, has_rvs, has_xp_continuous
 FROM gaiadr3.gaia_source
 WHERE source_id = {source_id}
 """
 
 GAIA_BATCH_QUERY = """
 SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
-       phot_g_mean_mag, has_rvs, has_xp_continuous
+       phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag, has_rvs, has_xp_continuous
 FROM gaiadr3.gaia_source
 WHERE source_id IN ({id_list})
 """
@@ -114,6 +114,8 @@ def fetch_gaia_row(gaia_source_id: int) -> dict:
         "pmdec": clean_float(row["pmdec"]),
         "parallax": clean_float(row["parallax"]),
         "phot_g_mean_mag": clean_float(row["phot_g_mean_mag"]),
+        "phot_bp_mean_mag": clean_float(row["phot_bp_mean_mag"]),
+        "phot_rp_mean_mag": clean_float(row["phot_rp_mean_mag"]),
         "has_rvs": bool(row["has_rvs"]),
         "has_xp_continuous": bool(row["has_xp_continuous"]),
     }
@@ -128,11 +130,11 @@ def add_star(conn: psycopg.Connection, gaia_source_id: int, input_name: str | No
         cur.execute(
             """
             INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec,
-                                parallax, phot_g_mean_mag, has_gaia_rvs, has_xp_continuous,
-                                input_name, name_aliases)
+                                parallax, phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag,
+                                has_gaia_rvs, has_xp_continuous, input_name, name_aliases)
             VALUES (%(gaia_source_id)s, %(ra)s, %(dec)s, %(ref_epoch)s, %(pmra)s,
-                    %(pmdec)s, %(parallax)s, %(phot_g_mean_mag)s, %(has_rvs)s, %(has_xp_continuous)s,
-                    %(input_name)s, %(name_aliases)s)
+                    %(pmdec)s, %(parallax)s, %(phot_g_mean_mag)s, %(phot_bp_mean_mag)s, %(phot_rp_mean_mag)s,
+                    %(has_rvs)s, %(has_xp_continuous)s, %(input_name)s, %(name_aliases)s)
             ON CONFLICT (gaia_source_id) DO UPDATE SET
                 ra = EXCLUDED.ra,
                 dec = EXCLUDED.dec,
@@ -141,6 +143,8 @@ def add_star(conn: psycopg.Connection, gaia_source_id: int, input_name: str | No
                 pmdec = EXCLUDED.pmdec,
                 parallax = EXCLUDED.parallax,
                 phot_g_mean_mag = EXCLUDED.phot_g_mean_mag,
+                phot_bp_mean_mag = EXCLUDED.phot_bp_mean_mag,
+                phot_rp_mean_mag = EXCLUDED.phot_rp_mean_mag,
                 has_gaia_rvs = EXCLUDED.has_gaia_rvs,
                 has_xp_continuous = EXCLUDED.has_xp_continuous,
                 input_name = COALESCE(EXCLUDED.input_name, stars.input_name),
@@ -225,6 +229,8 @@ def add_stars_batch(
                     "pmdec": clean_float(row["pmdec"]),
                     "parallax": clean_float(row["parallax"]),
                     "phot_g_mean_mag": clean_float(row["phot_g_mean_mag"]),
+                    "phot_bp_mean_mag": clean_float(row["phot_bp_mean_mag"]),
+                    "phot_rp_mean_mag": clean_float(row["phot_rp_mean_mag"]),
                     "has_rvs": bool(row["has_rvs"]),
                     "has_xp_continuous": bool(row["has_xp_continuous"]),
                     "input_name": None,
@@ -233,11 +239,11 @@ def add_stars_batch(
                 cur.execute(
                     """
                     INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec,
-                                        parallax, phot_g_mean_mag, has_gaia_rvs, has_xp_continuous,
-                                        input_name, name_aliases)
+                                        parallax, phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag,
+                                        has_gaia_rvs, has_xp_continuous, input_name, name_aliases)
                     VALUES (%(gaia_source_id)s, %(ra)s, %(dec)s, %(ref_epoch)s, %(pmra)s,
-                            %(pmdec)s, %(parallax)s, %(phot_g_mean_mag)s, %(has_rvs)s, %(has_xp_continuous)s,
-                            %(input_name)s, %(name_aliases)s)
+                            %(pmdec)s, %(parallax)s, %(phot_g_mean_mag)s, %(phot_bp_mean_mag)s, %(phot_rp_mean_mag)s,
+                            %(has_rvs)s, %(has_xp_continuous)s, %(input_name)s, %(name_aliases)s)
                     ON CONFLICT (gaia_source_id) DO UPDATE SET
                         name_aliases = ARRAY(
                             SELECT DISTINCT UNNEST(

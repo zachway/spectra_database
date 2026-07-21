@@ -17,8 +17,10 @@ CREATE TABLE stars (
     ref_epoch           DOUBLE PRECISION NOT NULL DEFAULT 2016.0,
     pmra                DOUBLE PRECISION,            -- mas/yr
     pmdec               DOUBLE PRECISION,            -- mas/yr
-    parallax            DOUBLE PRECISION,            -- mas
+    parallax            REAL,                        -- mas
     phot_g_mean_mag     REAL,
+    phot_bp_mean_mag    REAL,
+    phot_rp_mean_mag    REAL,
     has_gaia_rvs        BOOLEAN NOT NULL DEFAULT FALSE,
     -- Flag only, same free column on the gaia_source row — actual XP spectra
     -- are not ingested/stored (deferred, see project notes on storage).
