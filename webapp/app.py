@@ -24,8 +24,10 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 
+import astropy.units as u
 import duckdb
 import numpy as np
+from astropy.coordinates import SkyCoord
 from flask import Flask, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
@@ -100,6 +102,31 @@ def _aitoff_project(ra_deg: list[float], dec_deg: list[float]) -> tuple[list[flo
     x = 2 * np.cos(dec) * np.sin(lam / 2) / sinc_alpha
     y = np.sin(dec) / sinc_alpha
     return x.tolist(), y.tolist()
+
+
+def _galactic_plane_xy() -> tuple[list[float | None], list[float | None]]:
+    """Points along the Galactic plane (b=0), Aitoff-projected, for a
+    computed Milky Way overlay on the sky map. A real astropy coordinate
+    transform, not a raster image — sourcing a photographic all-sky image
+    and warping it pixel-for-pixel into this exact Aitoff parameterization
+    to align with the star coordinates would be a lot of extra work (and
+    licensing to sort out) for the same visual payoff.
+    """
+    lon = np.linspace(0, 360, 361)
+    gal = SkyCoord(l=lon * u.deg, b=np.zeros_like(lon) * u.deg, frame="galactic").icrs
+    x, y = _aitoff_project(gal.ra.deg.tolist(), gal.dec.deg.tolist())
+
+    # Break the line wherever consecutive points jump discontinuously (the
+    # RA wrap-around in the projection), so Plotly doesn't draw a spurious
+    # line straight across the plot connecting the two edges.
+    x_out, y_out = [x[0]], [y[0]]
+    for i in range(1, len(x)):
+        if (x[i] - x[i - 1]) ** 2 + (y[i] - y[i - 1]) ** 2 > 0.25:
+            x_out.append(None)
+            y_out.append(None)
+        x_out.append(x[i])
+        y_out.append(y[i])
+    return x_out, y_out
 
 
 def _group_holdings(holdings: list[dict]) -> list[dict]:
@@ -450,7 +477,7 @@ SKY_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">An Aitoff-projection all-sky map of a random sample of up to {{ "{:,}".format(sample_size) }} tracked stars — brighter stars (lower G mag) drawn larger, like a real star chart. Click a point to see that star's holdings.</p>
+  <p class="note">An Aitoff-projection all-sky map of a random sample of up to {{ "{:,}".format(sample_size) }} tracked stars — brighter stars (lower G mag) drawn larger, like a real star chart. The gray band is the Galactic plane (computed, not a photograph — see the note in the page source). Scroll to zoom, click a point to see that star's holdings.</p>
   {% if x %}
     <div id="sky-plot"></div>
     <script>
@@ -459,20 +486,32 @@ SKY_TEMPLATE = """
       const sizes = {{ sizes | tojson }};
       const sourceIds = {{ source_ids | tojson }};
       const labels = {{ labels | tojson }};
-      Plotly.newPlot('sky-plot', [{
-        x: x, y: y,
-        text: labels,
-        hovertemplate: '%{text}<extra></extra>',
-        mode: 'markers',
-        type: 'scattergl',
-        marker: { size: sizes, opacity: 0.85, color: '#000' },
-      }], {
-        xaxis: { visible: false, scaleanchor: 'y' },
-        yaxis: { visible: false },
+      const galX = {{ galactic_x | tojson }};
+      const galY = {{ galactic_y | tojson }};
+      Plotly.newPlot('sky-plot', [
+        {
+          x: galX, y: galY,
+          mode: 'lines',
+          line: { color: 'rgba(120,120,120,0.5)', width: 14 },
+          hoverinfo: 'skip',
+          showlegend: false,
+        },
+        {
+          x: x, y: y,
+          text: labels,
+          hovertemplate: '%{text}<extra></extra>',
+          mode: 'markers',
+          type: 'scattergl',
+          marker: { size: sizes, opacity: 0.85, color: '#000' },
+        },
+      ], {
+        xaxis: { showticklabels: false, zeroline: false, title: 'Right Ascension', scaleanchor: 'y' },
+        yaxis: { showticklabels: false, zeroline: false, title: 'Declination' },
         hovermode: 'closest',
-      }, { responsive: true });
+      }, { responsive: true, scrollZoom: true });
       document.getElementById('sky-plot').on('plotly_click', function(data) {
         const idx = data.points[0].pointIndex;
+        if (data.points[0].curveNumber !== 1) return;
         window.location.href = '/?q=' + sourceIds[idx];
       });
     </script>
@@ -499,11 +538,13 @@ def sky():
     x, y = _aitoff_project([r["ra"] for r in rows], [r["dec"] for r in rows])
     # Brighter (lower mag) stars drawn bigger, clipped to a sane pixel range.
     sizes = [max(1.5, min(10.0, 12.0 - r["phot_g_mean_mag"])) for r in rows]
+    galactic_x, galactic_y = _galactic_plane_xy()
     return render_template_string(
         SKY_TEMPLATE,
         x=x, y=y, sizes=sizes,
         source_ids=[str(r["gaia_source_id"]) for r in rows],
         labels=[_known_as(r) for r in rows],
+        galactic_x=galactic_x, galactic_y=galactic_y,
         sample_size=CMD_SAMPLE_SIZE,
         active_tab="sky",
     )
@@ -523,20 +564,20 @@ TIMEPLOTS_TEMPLATE = """
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
   <h2>Running leaderboard — all-time top 5 most-observed stars</h2>
-  <p class="note">Rank by cumulative observation count, month by month — lines cross when one star overtakes another. Ranked only among these 5 (the eventual all-time top 5), not the whole catalog at each point in time — cheaper to compute, and a star that led early but fell out of the final top 5 won't appear. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's reflected here.</p>
+  <p class="note">Cumulative observation count, month by month, log scale — lines cross when one star overtakes another. Only among these 5 (the eventual all-time top 5), not the whole catalog at each point in time — cheaper to compute, and a star that led early but fell out of the final top 5 won't appear. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's reflected here.</p>
   {% if leaderboard_traces %}
     <div id="cumulative-plot"></div>
     <script>
       const months = {{ leaderboard_months | tojson }};
       const traces = {{ leaderboard_traces | tojson }}.map(t => ({
-        x: months, y: t.rank, name: t.label,
+        x: months, y: t.count, name: t.label,
         text: t.count.map(c => t.label + ': ' + c + ' cumulative observations'),
         hovertemplate: '%{text}<extra></extra>',
         mode: 'lines+markers', type: 'scatter',
       }));
       Plotly.newPlot('cumulative-plot', traces, {
         xaxis: { title: 'Month' },
-        yaxis: { title: 'Rank (among these 5)', autorange: 'reversed', dtick: 1 },
+        yaxis: { title: 'Cumulative observations (log scale)', type: 'log' },
         hovermode: 'closest',
       }, { responsive: true });
     </script>
@@ -545,22 +586,24 @@ TIMEPLOTS_TEMPLATE = """
   {% endif %}
 
   <hr>
-  <h2>Most-observed star per 6-month period</h2>
-  <p class="note">Fixed 6-month bins, not a true sliding window — whichever star had the most dated observations within each period. Hover a bar to see which star.</p>
+  <h2>Top 5 observed per 6-month period</h2>
+  <p class="note">Fixed 6-month bins, not a true sliding window — the 5 stars with the most dated observations within each period (a different 5 each period, unlike the leaderboard above). Log scale. Hover a bar to see which star.</p>
   {% if period_labels %}
     <div id="period-plot"></div>
     <script>
       const periodLabels = {{ period_labels | tojson }};
-      const periodCounts = {{ period_counts | tojson }};
-      const periodStars = {{ period_stars | tojson }};
-      Plotly.newPlot('period-plot', [{
-        x: periodLabels, y: periodCounts,
-        text: periodStars,
-        hovertemplate: '%{text}: %{y} observations<extra></extra>',
+      const periodTraces = {{ period_traces | tojson }}.map(t => ({
+        x: periodLabels, y: t.counts,
+        text: t.stars.map((s, i) => s ? (s + ': ' + t.counts[i] + ' observations') : ''),
+        hovertemplate: '%{text}<extra></extra>',
+        name: 'Rank ' + t.rank,
         type: 'bar',
-      }], {
+      }));
+      Plotly.newPlot('period-plot', periodTraces, {
+        barmode: 'group',
         xaxis: { title: 'Period' },
-        yaxis: { title: 'Observations (top star)' },
+        yaxis: { title: 'Observations (log scale)', type: 'log' },
+        showlegend: false,
       }, { responsive: true });
     </script>
   {% else %}
@@ -627,17 +670,8 @@ def timeplots():
                     series.append(running)
                 cumulative[gid] = series
 
-            # Rank among just these 5 stars at each month (1 = most observed
-            # so far) — ties broken by gaia_source_id for a stable order.
-            ranks = {gid: [] for gid in top5_ids}
-            for i in range(len(grid)):
-                ordered = sorted(top5_ids, key=lambda gid: (-cumulative[gid][i], gid))
-                rank_by_gid = {gid: rank + 1 for rank, gid in enumerate(ordered)}
-                for gid in top5_ids:
-                    ranks[gid].append(rank_by_gid[gid])
-
             leaderboard_traces = [
-                {"label": labels_by_id[gid], "rank": ranks[gid], "count": cumulative[gid]}
+                {"label": labels_by_id[gid], "count": cumulative[gid]}
                 for gid in top5_ids
             ]
 
@@ -654,19 +688,32 @@ def timeplots():
         GROUP BY s.gaia_source_id, s.input_name, s.name_aliases, yr, half
         """
     )
-    best_per_period: dict[tuple, dict] = {}
+    period_buckets: dict[tuple, list[dict]] = defaultdict(list)
     for r in _rows_as_dicts(cur):
-        key = (r["yr"], r["half"])
-        if key not in best_per_period or r["n"] > best_per_period[key]["n"]:
-            best_per_period[key] = r
-    period_keys = sorted(best_per_period.keys())
+        period_buckets[(r["yr"], r["half"])].append(r)
+    for bucket in period_buckets.values():
+        bucket.sort(key=lambda r: -r["n"])
+    period_keys = sorted(period_buckets.keys())
+
+    PERIOD_TOP_N = 5
+    period_traces = []
+    for rank_idx in range(PERIOD_TOP_N):
+        counts, stars = [], []
+        for key in period_keys:
+            bucket = period_buckets[key]
+            if rank_idx < len(bucket):
+                counts.append(bucket[rank_idx]["n"])
+                stars.append(_known_as(bucket[rank_idx]))
+            else:
+                counts.append(None)
+                stars.append(None)
+        period_traces.append({"rank": rank_idx + 1, "counts": counts, "stars": stars})
 
     return render_template_string(
         TIMEPLOTS_TEMPLATE,
         leaderboard_months=leaderboard_months, leaderboard_traces=leaderboard_traces,
         period_labels=[f"{yr} H{half}" for yr, half in period_keys],
-        period_counts=[best_per_period[k]["n"] for k in period_keys],
-        period_stars=[_known_as(best_per_period[k]) for k in period_keys],
+        period_traces=period_traces,
         active_tab="timeplots",
     )
 
