@@ -41,7 +41,7 @@ app = Flask(__name__)
 # query — per project to-do, laptop/small-server scale, not a bulk pipeline.
 MAX_NAME_LOOKUPS = 2000
 
-DATA_TABLES = ("stars", "archives", "spectroscopy_holdings", "archive_sync_state", "leaderboard")
+DATA_TABLES = ("stars", "archives", "spectroscopy_holdings", "archive_sync_state", "leaderboard", "cmd_stars")
 
 
 def _resolve_data_source() -> str:
@@ -62,12 +62,18 @@ def _resolve_data_source() -> str:
 def _make_connection() -> duckdb.DuckDBPyConnection:
     source = _resolve_data_source()
     con = duckdb.connect(database=":memory:")
+    con.execute("INSTALL json")
+    con.execute("LOAD json")
     if source.startswith("http://") or source.startswith("https://"):
         con.execute("INSTALL httpfs")
         con.execute("LOAD httpfs")
     for table in DATA_TABLES:
         path = f"{source}/{table}.parquet"
         con.execute(f"CREATE VIEW {table} AS SELECT * FROM read_parquet('{path}')")
+    # /stats' summary numbers -- precomputed by scripts.export_to_parquet
+    # (see its module for why) as one JSON object with mixed scalar/list
+    # fields, rather than one table per field like everything else here.
+    con.execute(f"CREATE VIEW stats_summary AS SELECT * FROM read_json_auto('{source}/stats_summary.json')")
     return con
 
 
@@ -157,14 +163,20 @@ def _archive_status() -> list[dict]:
     return _rows_as_dicts(cur)
 
 
-# Cap on how many stars the CMD plots as individually-clickable points — the
-# catalog is 1.4M+ and growing toward several million, so shipping every
-# star to the browser would mean an ever-growing multi-MB payload and more
-# points than any charting library renders interactively without WebGL
-# trouble. A bounded random sample keeps the page fast regardless of catalog
-# size; USING SAMPLE applies after the WHERE filter, not before, so this is
-# a sample of valid points, not valid points among a sample of everything.
+# How many stars the CMD plots as individually-clickable points. The
+# underlying list (the CMD_SAMPLE_SIZE most-observed stars with valid
+# photometry) is precomputed by scripts.export_to_parquet, not sampled here
+# — this constant is just for the page's descriptive text; the actual cap is
+# baked into that export's LIMIT.
 CMD_SAMPLE_SIZE = 30000
+
+# Sky Map still uses a genuine random sample (unlike CMD) — the catalog is
+# 1.4M+ and growing toward several million, so shipping every star to the
+# browser would mean an ever-growing multi-MB payload and more points than
+# any charting library renders interactively without WebGL trouble. USING
+# SAMPLE applies after the WHERE filter, not before, so this is a sample of
+# valid points, not valid points among a sample of everything.
+SKY_SAMPLE_SIZE = 30000
 
 NAV_HTML = """
   <nav class="tabs">
@@ -392,7 +404,7 @@ CMD_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">Gaia color-magnitude diagram — a random sample of up to {{ "{:,}".format(sample_size) }} tracked stars with valid BP-RP color and a positive parallax (needed for absolute magnitude). Click a point to see that star's holdings.</p>
+  <p class="note">Gaia color-magnitude diagram — the {{ "{:,}".format(sample_size) }} most-observed tracked stars with valid BP-RP color and a positive parallax (needed for absolute magnitude). Click a point to see that star's holdings.</p>
   {% if bp_rp %}
     <div id="cmd-plot"></div>
     <script>
@@ -439,25 +451,21 @@ CMD_TEMPLATE = """
 
 @app.route("/cmd")
 def cmd():
+    # cmd_stars is precomputed by scripts.export_to_parquet — see that
+    # module for why (same reasoning as the Leaderboard: ranking by
+    # observation count needs a join against the ever-growing holdings
+    # table, which shouldn't happen on every request in a memory-capped
+    # container). Already the CMD_SAMPLE_SIZE most-observed stars, in no
+    # particular order beyond that.
     cur = get_cursor()
-    cur.execute(
-        f"""
-        SELECT gaia_source_id, phot_bp_mean_mag - phot_rp_mean_mag AS bp_rp,
-               phot_g_mean_mag + 5 * log10(parallax) - 10 AS abs_g_mag,
-               name_aliases, input_name
-        FROM stars
-        WHERE phot_bp_mean_mag IS NOT NULL AND phot_rp_mean_mag IS NOT NULL
-          AND phot_g_mean_mag IS NOT NULL AND parallax > 0
-        USING SAMPLE {CMD_SAMPLE_SIZE}
-        """
-    )
+    cur.execute("SELECT gaia_source_id, bp_rp, abs_g_mag, label FROM cmd_stars")
     rows = _rows_as_dicts(cur)
     return render_template_string(
         CMD_TEMPLATE,
         bp_rp=[r["bp_rp"] for r in rows],
         abs_g_mag=[r["abs_g_mag"] for r in rows],
         source_ids=[str(r["gaia_source_id"]) for r in rows],
-        labels=[_known_as(r) for r in rows],
+        labels=[r["label"] for r in rows],
         sample_size=CMD_SAMPLE_SIZE,
         active_tab="cmd",
     )
@@ -530,7 +538,7 @@ def sky():
         SELECT gaia_source_id, ra, dec, phot_g_mean_mag, name_aliases, input_name
         FROM stars
         WHERE ra IS NOT NULL AND dec IS NOT NULL AND phot_g_mean_mag IS NOT NULL
-        USING SAMPLE {CMD_SAMPLE_SIZE}
+        USING SAMPLE {SKY_SAMPLE_SIZE}
         """
     )
     rows = _rows_as_dicts(cur)
@@ -544,7 +552,7 @@ def sky():
         source_ids=[str(r["gaia_source_id"]) for r in rows],
         labels=[_known_as(r) for r in rows],
         galactic_x=galactic_x, galactic_y=galactic_y,
-        sample_size=CMD_SAMPLE_SIZE,
+        sample_size=SKY_SAMPLE_SIZE,
         active_tab="sky",
     )
 
@@ -625,67 +633,33 @@ TIMEPLOTS_TEMPLATE = """
 def timeplots():
     cur = get_cursor()
 
-    # Precomputed by scripts.export_to_parquet (runs against live Postgres on
-    # morgan, GROUP BY pushed down there) rather than aggregated here from
-    # raw spectroscopy_holdings — that used to mean pulling the entire,
-    # growing holdings table over HTTP into this container just to produce a
-    # few thousand aggregate rows, which OOM'd the 512Mi Cloud Run instance
-    # once a large sync grew the table. Reading the precomputed table keeps
-    # this bounded by distinct star-periods regardless of catalog size.
-    cur.execute("SELECT gaia_source_id, yr, half, n FROM leaderboard")
-    agg_rows = _rows_as_dicts(cur)
+    # scripts.export_to_parquet precomputes the full top-5-per-period
+    # selection (not just the raw counts) against live Postgres on morgan —
+    # this table is already just "cast" stars x all periods, with within/
+    # cumulative values already nulled out for periods a star isn't top-5
+    # in. See that module for why: an earlier version of this route did the
+    # top-5 selection here in Python, which meant sorted() over the full
+    # (multi-million-star) population once per period — confirmed live as
+    # what was actually OOMing the Cloud Run container, not the raw GROUP BY.
+    cur.execute("SELECT gaia_source_id, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY gaia_source_id, yr, half")
+    rows = _rows_as_dicts(cur)
 
     period_labels: list[str] = []
     cumulative_traces: list[dict] = []
     period_traces: list[dict] = []
 
-    if agg_rows:
-        period_keys = sorted({(r["yr"], r["half"]) for r in agg_rows})
+    if rows:
+        period_keys = sorted({(r["yr"], r["half"]) for r in rows})
         period_labels = [f"{yr} H{half}" for yr, half in period_keys]
 
-        within: dict[int, dict[tuple, int]] = defaultdict(dict)
-        for r in agg_rows:
-            within[r["gaia_source_id"]][(r["yr"], r["half"])] = r["n"]
-        all_star_ids = list(within.keys())
-
-        # Cumulative (all-time-so-far) count per star, at each period —
-        # running sum of within-period counts up to and including it.
-        cumulative: dict[int, dict[tuple, int]] = {}
-        for gid in all_star_ids:
-            running, series = 0, {}
-            for key in period_keys:
-                running += within[gid].get(key, 0)
-                series[key] = running
-            cumulative[gid] = series
-
-        # A star earns a line in both charts if it was ever top-5 by either
-        # metric at any single period — not just the eventual all-time top
-        # 5, so a star that led early and later fell behind still shows up.
-        # But it only gets plotted for the specific periods where it was
-        # actually top-5 by that period's metric — otherwise a star that
-        # broke in once would drag a line across every period forever,
-        # cluttering the chart with stars that have since dropped out.
-        TOP_N = 5
-        period_top5: dict[tuple, set[int]] = {}
-        cumulative_top5: dict[tuple, set[int]] = {}
-        cast: set[int] = set()
-        for key in period_keys:
-            p_top = set(sorted(all_star_ids, key=lambda gid: (-within[gid].get(key, 0), gid))[:TOP_N])
-            c_top = set(sorted(all_star_ids, key=lambda gid: (-cumulative[gid][key], gid))[:TOP_N])
-            period_top5[key] = p_top
-            cumulative_top5[key] = c_top
-            cast.update(p_top)
-            cast.update(c_top)
-
+        by_star: dict[int, dict] = defaultdict(dict)
         labels_by_id: dict[int, str] = {}
-        if cast:
-            id_list = ",".join(str(i) for i in cast)
-            cur.execute(f"SELECT gaia_source_id, input_name, name_aliases FROM stars WHERE gaia_source_id IN ({id_list})")
-            for r in _rows_as_dicts(cur):
-                labels_by_id[r["gaia_source_id"]] = _known_as(r)
+        for r in rows:
+            by_star[r["gaia_source_id"]][(r["yr"], r["half"])] = r
+            labels_by_id[r["gaia_source_id"]] = r["label"]
 
-        for gid in sorted(cast):
-            label = labels_by_id.get(gid, str(gid))
+        for gid in sorted(by_star):
+            by_period = by_star[gid]
             # Gaia source_ids are 19-digit integers, well past JS's 53-bit
             # safe-integer range — serialized as a string so a click-through
             # can't get silently rounded by the browser (same issue fixed
@@ -693,16 +667,16 @@ def timeplots():
             source_id = str(gid)
             cumulative_traces.append(
                 {
-                    "label": label,
+                    "label": labels_by_id[gid],
                     "source_id": source_id,
-                    "counts": [cumulative[gid][k] if gid in cumulative_top5[k] else None for k in period_keys],
+                    "counts": [by_period[k]["cumulative_n"] if k in by_period else None for k in period_keys],
                 }
             )
             period_traces.append(
                 {
-                    "label": label,
+                    "label": labels_by_id[gid],
                     "source_id": source_id,
-                    "counts": [within[gid].get(k, 0) if gid in period_top5[k] else None for k in period_keys],
+                    "counts": [by_period[k]["within_n"] if k in by_period else None for k in period_keys],
                 }
             )
 
@@ -806,8 +780,6 @@ STATS_TEMPLATE = """
 </html>
 """
 
-TRENDING_YEARS = 5
-
 # Natural OBAFGKM order — GROUP BY doesn't preserve it, so the display order
 # is applied in Python after querying.
 SPECTRAL_BUCKETS = ["O/B (hot)", "A", "F", "G", "K", "M (cool)"]
@@ -823,57 +795,21 @@ def _known_as(row: dict) -> str:
 def stats():
     cur = get_cursor()
 
-    cur.execute(
-        """
-        SELECT s.gaia_source_id, s.input_name, s.name_aliases, count(*) AS n
-        FROM spectroscopy_holdings h
-        JOIN stars s ON s.gaia_source_id = h.gaia_source_id
-        GROUP BY s.gaia_source_id, s.input_name, s.name_aliases
-        ORDER BY n DESC
-        LIMIT 20
-        """
-    )
-    most_observed = _rows_as_dicts(cur)
-    for r in most_observed:
-        r["known_as"] = _known_as(r)
-
-    cur.execute(
-        f"""
-        SELECT s.gaia_source_id, s.input_name, s.name_aliases, count(*) AS n
-        FROM spectroscopy_holdings h
-        JOIN stars s ON s.gaia_source_id = h.gaia_source_id
-        WHERE h.obs_date >= CURRENT_DATE - INTERVAL {TRENDING_YEARS} YEAR
-        GROUP BY s.gaia_source_id, s.input_name, s.name_aliases
-        ORDER BY n DESC
-        LIMIT 20
-        """
-    )
-    trending = _rows_as_dicts(cur)
-    for r in trending:
-        r["known_as"] = _known_as(r)
-
-    cur.execute("SELECT count(*) FROM stars")
-    total_stars = cur.fetchone()[0]
-
-    cur.execute("SELECT count(*) FROM spectroscopy_holdings")
-    total_holdings = cur.fetchone()[0]
-
-    cur.execute(
-        """
-        SELECT a.display_name, count(*) AS n
-        FROM spectroscopy_holdings h
-        JOIN archives a ON a.archive_code = h.archive_code
-        GROUP BY a.display_name
-        ORDER BY n DESC
-        """
-    )
-    by_archive = _rows_as_dicts(cur)
-
-    cur.execute(
-        "SELECT match_method, count(*) AS n FROM spectroscopy_holdings "
-        "WHERE match_status = 'matched' GROUP BY match_method ORDER BY n DESC"
-    )
-    by_method = _rows_as_dicts(cur)
+    # stats_summary is precomputed by scripts.export_to_parquet — most-
+    # observed, trending, total_holdings, by-archive and by-method all used
+    # to be separate live queries here, each scanning some or all of the
+    # ever-growing spectroscopy_holdings table on every request. See that
+    # module for the full reasoning (same OOM-shaped risk as the
+    # Leaderboard, just five smaller scans instead of one huge one).
+    cur.execute("SELECT * FROM stats_summary")
+    summary = _rows_as_dicts(cur)[0]
+    most_observed = summary["most_observed"]
+    trending = summary["trending"]
+    total_stars = summary["total_stars"]
+    total_holdings = summary["total_holdings"]
+    by_archive = summary["by_archive"]
+    by_method = summary["by_method"]
+    trending_years = summary["trending_years"]
 
     cur.execute(
         """
@@ -931,7 +867,7 @@ def stats():
 
     return render_template_string(
         STATS_TEMPLATE,
-        most_observed=most_observed, trending=trending, trending_years=TRENDING_YEARS,
+        most_observed=most_observed, trending=trending, trending_years=trending_years,
         total_stars=total_stars, total_holdings=total_holdings,
         by_archive=by_archive, by_method=by_method,
         nearest=nearest, fastest_movers=fastest_movers, spectral_types=spectral_types,
