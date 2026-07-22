@@ -873,7 +873,10 @@ NOT_YET_TRACKED = [
     ("NOIRLab Astro Data Archive", "CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI", "share the same API as the currently-tracked SOAR Goodman Spectrograph, just not wired up yet"),
     ("Keck Observatory Archive", "DEIMOS, ESI, LRIS, NIRES", "only HIRES is tracked currently"),
     ("LBT — PEPSI", "MODS, LUCI", "also spectroscopy-capable, not yet added"),
+    ("CARMENES", "NIR channel (0.96-1.71 μm)", "only the VIS channel (0.52-0.96 μm) is tracked currently"),
     ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
+    ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
+    ("—", "OIRSA (CfA)", "a ~2011 stateful session-driven search wizard with no documented direct-query API; investigated, meaningfully more reverse-engineering than any archive implemented so far"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
 ]
 
