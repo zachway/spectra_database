@@ -7,6 +7,19 @@ is exhausted), and the same clear-error-on-auth-failure behavior. Only the
 instrument name, the earliest date, and the reduced-product filename filter
 differ per instrument -- see gemini_ghost.py and gemini_igrins.py for those
 and the live evidence behind each one's filter choice.
+
+jsonsummary silently caps its response at 2000 rows -- confirmed live: a
+180-day IGRINS window returned exactly 2000 rows, all from the first few
+days, never reaching the reduced files known to exist later in that same
+window (see gemini_igrins.py). A too-wide window doesn't error, it just
+quietly drops data past row 2000 -- worse than an empty page, since it
+looks like a normal partial result. Guarded here by raising if a response
+comes back at exactly the cap, rather than risk it happening again
+silently for either instrument.
+
+Also: GOA serves these files bzip2-compressed (filenames end in .fits.bz2,
+not .fits) -- confirmed live. Callers' is_reduced() should check for a
+substring, not an exact suffix match, or it'll never match anything.
 """
 
 import os
@@ -21,6 +34,11 @@ BASE_URL = "https://archive.gemini.edu"
 DOWNLOAD_URL = BASE_URL + "/file/{filename}"
 
 COOKIE_ENV_VAR = "GOA_SESSION_COOKIE"
+
+# Confirmed live (2026-07-22): a real jsonsummary response hit exactly this
+# count with more data known to exist beyond it. Not documented anywhere,
+# just observed.
+RESPONSE_ROW_CAP = 2000
 
 
 def _date_str(d: date) -> str:
@@ -63,6 +81,13 @@ def fetch_reduced(
                 "missing or stale. Re-login at https://archive.gemini.edu and refresh the env var."
             )
         records_json = resp.json()
+        if len(records_json) >= RESPONSE_ROW_CAP:
+            raise RuntimeError(
+                f"GOA returned {len(records_json)} rows for {instrument} "
+                f"{_date_str(window_start)}-{_date_str(window_end)} -- likely hit the "
+                f"~{RESPONSE_ROW_CAP}-row response cap, meaning some data in this window may be "
+                "silently missing. Narrow WINDOW_DAYS for this archive and retry."
+            )
 
         rows = [r for r in records_json if is_reduced(r.get("filename", ""))]
         if rows or window_end >= today:
