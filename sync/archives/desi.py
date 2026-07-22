@@ -10,10 +10,21 @@ gives matching TARGETID/GAIA SOURCE_ID and consistent RA between the two).
 
 The file is far too large to download whole (even the two extensions we
 need are 1.65GB and 4.08GB on their own — the server doesn't expose an
-API, just the raw file). Instead this reads fixed-size row windows via
-HTTP Range requests, parsing the raw bytes directly with a hand-built
-numpy dtype (astropy's own HDU.data access was tried first and pulls the
-whole extension into memory before slicing — not useful here).
+API, just the raw file). This reads the raw bytes directly with a
+hand-built numpy dtype (astropy's own HDU.data access was tried first and
+pulls the whole extension into memory before slicing — not useful here).
+
+First cut of this issued one HTTP Range request per page (2 requests x
+~ROWS_PER_PAGE rows), which meant every one of the ~100+ pages needed for
+the full ~2M-row catalog cost a network round trip to data.desi.lbl.gov —
+confirmed live as consistently 1.5-4.5 minutes per page, on track for many
+hours total. Downloading each extension once instead (still just the two
+needed extensions, not the full 12GB file) to a local cache on morgan and
+reading row windows from local disk turns that into a single ~5.7GB
+sequential download plus fast local seeks. The cache is deliberately
+temporary: fetch() deletes it once the archive catches up (last_row >=
+n_rows), so nothing multi-GB sits around after the backfill converges —
+a future DESI data release just re-downloads fresh.
 
 SOURCE_ID == 999999 is GAIA's sentinel for "no Gaia crossmatch"; those rows
 are skipped. No per-observation date is available in RVTAB/GAIA without
@@ -22,6 +33,7 @@ holdings carry no obs_date, same tradeoff as the other direct-Gaia-column
 archives that lack one.
 """
 
+import os
 import re
 
 import numpy as np
@@ -42,6 +54,16 @@ SPECTRUM_URL = (
 )
 
 _FITS_TO_NUMPY = {"D": ">f8", "E": ">f4", "K": ">i8", "J": ">i4", "I": ">i2", "B": "u1", "L": "S1"}
+
+# Not under public_html (morgan and joy share that NFS home, and Apache
+# serves it publicly) -- this is a multi-GB scratch cache, not something to
+# publish. Overridable for local dev / testing without touching morgan's
+# real cache.
+CACHE_DIR = os.environ.get("DESI_CACHE_DIR", os.path.expanduser("~/.cache/spectra_database"))
+RV_CACHE_PATH = os.path.join(CACHE_DIR, "desi_mwsall_iron_rvtab.dat")
+GAIA_CACHE_PATH = os.path.join(CACHE_DIR, "desi_mwsall_iron_gaia.dat")
+
+_DOWNLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 
 
 def _build_dtype(columns):
@@ -72,12 +94,31 @@ def _get_layout():
     }
 
 
-def _fetch_rows(dat_loc: int, dtype: np.dtype, start_row: int, n_rows: int) -> np.ndarray:
-    start = dat_loc + start_row * dtype.itemsize
-    end = start + n_rows * dtype.itemsize - 1
-    resp = requests.get(FITS_URL, headers={"Range": f"bytes={start}-{end}"}, timeout=120)
-    resp.raise_for_status()
-    return np.frombuffer(resp.content, dtype=dtype)
+def _ensure_cached(dat_loc: int, dtype: np.dtype, n_rows: int, cache_path: str) -> None:
+    expected_size = n_rows * dtype.itemsize
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) == expected_size:
+        return
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    start = dat_loc
+    end = start + expected_size - 1
+    tmp_path = cache_path + ".tmp"
+    with requests.get(FITS_URL, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=600) as resp:
+        resp.raise_for_status()
+        with open(tmp_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK_SIZE):
+                f.write(chunk)
+    # Rename into place only after a full, successful download -- same
+    # torn-file concern as scripts.export_to_parquet's atomic writes, here
+    # guarding against a half-downloaded cache looking "present" to the
+    # os.path.getsize check above if a later run gets interrupted mid-write.
+    os.rename(tmp_path, cache_path)
+
+
+def _read_cached_rows(cache_path: str, dtype: np.dtype, start_row: int, n_rows: int) -> np.ndarray:
+    with open(cache_path, "rb") as f:
+        f.seek(start_row * dtype.itemsize)
+        buf = f.read(n_rows * dtype.itemsize)
+    return np.frombuffer(buf, dtype=dtype)
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
@@ -85,11 +126,20 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     layout = _get_layout()
 
     if last_row >= layout["n_rows"]:
+        # Caught up -- drop the cache rather than let a multi-GB scratch
+        # file sit around indefinitely. A future DESI data release just
+        # re-downloads fresh on its first page.
+        for path in (RV_CACHE_PATH, GAIA_CACHE_PATH):
+            if os.path.exists(path):
+                os.remove(path)
         return [], cursor
 
+    _ensure_cached(layout["rv_dat_loc"], layout["rv_dtype"], layout["n_rows"], RV_CACHE_PATH)
+    _ensure_cached(layout["gaia_dat_loc"], layout["gaia_dtype"], layout["n_rows"], GAIA_CACHE_PATH)
+
     n = min(ROWS_PER_PAGE, layout["n_rows"] - last_row)
-    rv_rows = _fetch_rows(layout["rv_dat_loc"], layout["rv_dtype"], last_row, n)
-    gaia_rows = _fetch_rows(layout["gaia_dat_loc"], layout["gaia_dtype"], last_row, n)
+    rv_rows = _read_cached_rows(RV_CACHE_PATH, layout["rv_dtype"], last_row, n)
+    gaia_rows = _read_cached_rows(GAIA_CACHE_PATH, layout["gaia_dtype"], last_row, n)
 
     records = []
     for rv, gaia in zip(rv_rows, gaia_rows):
