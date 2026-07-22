@@ -41,7 +41,7 @@ app = Flask(__name__)
 # query — per project to-do, laptop/small-server scale, not a bulk pipeline.
 MAX_NAME_LOOKUPS = 2000
 
-DATA_TABLES = ("stars", "archives", "spectroscopy_holdings", "archive_sync_state")
+DATA_TABLES = ("stars", "archives", "spectroscopy_holdings", "archive_sync_state", "leaderboard")
 
 
 def _resolve_data_source() -> str:
@@ -625,21 +625,14 @@ TIMEPLOTS_TEMPLATE = """
 def timeplots():
     cur = get_cursor()
 
-    # Aggregated (not raw-row) per (star, 6-month period) counts — bounded
-    # by distinct stars x distinct periods, not total observation count, so
-    # this stays cheap regardless of catalog size.
-    cur.execute(
-        """
-        SELECT
-            gaia_source_id,
-            year(obs_date) AS yr,
-            CASE WHEN month(obs_date) <= 6 THEN 1 ELSE 2 END AS half,
-            count(*) AS n
-        FROM spectroscopy_holdings
-        WHERE obs_date IS NOT NULL AND gaia_source_id IS NOT NULL
-        GROUP BY gaia_source_id, yr, half
-        """
-    )
+    # Precomputed by scripts.export_to_parquet (runs against live Postgres on
+    # morgan, GROUP BY pushed down there) rather than aggregated here from
+    # raw spectroscopy_holdings — that used to mean pulling the entire,
+    # growing holdings table over HTTP into this container just to produce a
+    # few thousand aggregate rows, which OOM'd the 512Mi Cloud Run instance
+    # once a large sync grew the table. Reading the precomputed table keeps
+    # this bounded by distinct star-periods regardless of catalog size.
+    cur.execute("SELECT gaia_source_id, yr, half, n FROM leaderboard")
     agg_rows = _rows_as_dicts(cur)
 
     period_labels: list[str] = []
