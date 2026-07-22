@@ -26,11 +26,22 @@ resets back to the caller's preferred window_days -- if density was just a
 temporary burst, this avoids staying artificially narrow (and slow) for
 the rest of the scan.
 
+Confirmed live a third time: a single IGRINS day (2021-08-04, right around
+when IGRINS moved from Gemini-South to Gemini-North) still hit the cap even
+at the 1-day floor -- there's no coarser window to blame this time, the day
+itself has too much. Raising here would block the entire rest of the scan
+on one bad day, indefinitely, with no way to skip past it short of editing
+code. Logs a warning and moves on instead (same shape as ingest.add_star's
+"SIMBAD resolution failed, continuing without it" precedent) -- whatever
+spec_a0v.fits files happen to be within that day's first ~2000 rows still
+get processed, only rows past the cap for that specific day are missed.
+
 Also: GOA serves these files bzip2-compressed (filenames end in .fits.bz2,
 not .fits) -- confirmed live. Callers' is_reduced() should check for a
 substring, not an exact suffix match, or it'll never match anything.
 """
 
+import logging
 import os
 from datetime import date, datetime, timedelta
 from typing import Callable
@@ -38,6 +49,8 @@ from typing import Callable
 import requests
 
 from sync.base import RawObservation
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://archive.gemini.edu"
 DOWNLOAD_URL = BASE_URL + "/file/{filename}"
@@ -95,12 +108,15 @@ def fetch_reduced(
             if len(records_json) < RESPONSE_ROW_CAP:
                 break
             if width <= 1:
-                raise RuntimeError(
-                    f"GOA returned {len(records_json)} rows for {instrument} "
-                    f"{_date_str(window_start)}-{_date_str(window_end)} even at the minimum 1-day "
-                    f"window -- genuinely hit the ~{RESPONSE_ROW_CAP}-row response cap on a single "
-                    "day's data. This needs a different pagination approach for this instrument."
+                logger.warning(
+                    "GOA returned %d rows for %s %s-%s even at the minimum 1-day window -- "
+                    "genuinely hit the ~%d-row response cap on a single day's data. Proceeding "
+                    "with whatever's in this response and moving past this day rather than "
+                    "blocking the rest of the scan -- some of %s's data may be missing.",
+                    len(records_json), instrument, _date_str(window_start), _date_str(window_end),
+                    RESPONSE_ROW_CAP, _date_str(window_start),
                 )
+                break
             width = max(1, width // 2)
 
         rows = [r for r in records_json if is_reduced(r.get("filename", ""))]
