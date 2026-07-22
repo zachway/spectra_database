@@ -14,11 +14,12 @@ logged, the connection is rolled back so the failure can't poison the next
 archive's transaction, and the driver moves on. Not-yet-implemented archives
 (weave, four_most) aren't registered here at all — they have no public data.
 
-gemini_ghost needs a GOA_SESSION_COOKIE env var (see its module docstring)
--- morgan is headless, so this means logging into archive.gemini.edu in a
-browser elsewhere and copying the session cookie value over by hand before
-including gemini_ghost in --only. Without it, that one archive fails
-(handled the same as any other failure) rather than blocking the rest.
+gemini_ghost and gemini_igrins both need a GOA_SESSION_COOKIE env var (see
+sync/archives/_goa_common.py) -- morgan is headless, so this means logging
+into archive.gemini.edu in a browser elsewhere and copying the session
+cookie value over by hand before including either in --only. Without it,
+those archives fail (handled the same as any other failure) rather than
+blocking the rest.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from sync.archives import (
     galah,
     gemini,
     gemini_ghost,
+    gemini_igrins,
     koa,
     lamost,
     lbt,
@@ -60,6 +62,7 @@ ARCHIVES = {
     "cfht_cadc": cfht_cadc.fetch,
     "gemini": gemini.fetch,
     "gemini_ghost": gemini_ghost.fetch,
+    "gemini_igrins": gemini_igrins.fetch,
     "koa": koa.fetch,
     "lamost": lamost.fetch,
     "lbt": lbt.fetch,

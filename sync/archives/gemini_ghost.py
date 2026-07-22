@@ -14,6 +14,17 @@ some of GHOST's per-arm calibrated products (GHOST splits light into
 red/blue arms, hence the paired filenames). This module goes straight to
 GOA instead of routing around CADC's gap.
 
+Broader per-instrument check (caom2.Plane, calibrationLevel by instrument):
+GHOST actually has some reduced (level 2) planes in CADC (2,143 of them,
+against 21,278 raw) -- this specific observation's gap wasn't total, just
+patchy. GMOS-N/GNIRS show the same small-but-present reduced fraction
+(normal). GPI/IGRINS/MAROON-X show zero level-2 planes in CADC at all --
+IGRINS confirmed live via GOA to have real reduced products GOA-side
+(see gemini_igrins.py) that CADC is missing entirely, not just patchily;
+MAROON-X confirmed live via GOA to have no reduced products even on GOA
+itself (visitor instrument, own separate pipeline, not Gemini's DRAGONS) --
+nothing to sync there via this approach.
+
 Filters to filenames containing "_calibrated" -- confirmed live (via the
 GOA web UI, GHOST/science search) as the naming pattern for genuinely
 reduced, science-ready per-arm spectra, as opposed to _dragons.fits
@@ -35,16 +46,7 @@ expiration, but it's tied to a real login session, not a durable token --
 expect to re-login and refresh it periodically. Since morgan is headless,
 that means logging in from a machine with a browser and copying the value
 over each time it goes stale, not something this module can automate.
-
-NOT LIVE-TESTED end to end -- GOA's anonymous block made that impossible
-from every environment available while writing this (dev machine and
-morgan both got the same "anonymous access denied" response even for the
-JSON endpoints). Built directly against archive.gemini.edu/help/api.html's
-documented URL syntax and field names (filename, data_label,
-observation_id, object, ut_datetime, release) instead. First real run
-needs a human with a valid cookie watching it -- if the URL syntax,
-field names, or the _calibrated filename convention turn out wrong, this
-will need a follow-up fix informed by the actual response shape.
+Shared with gemini_igrins.py -- see sync/archives/_goa_common.py.
 
 Paginated by date window like gemini.py, same reasoning: GOA's date-range
 selection syntax (YYYYMMDD-YYYYMMDD) doesn't guarantee every window has
@@ -53,20 +55,17 @@ data, so an empty window is looped past internally rather than treated as
 guess (not sized against real GHOST row-density the way gemini.py's 7-day
 window was) -- GHOST is Gemini's newest instrument with a much smaller
 total history than the rest of Gemini's ~30-year archive, so a wide window
-should still be a small page; revisit if a real run proves otherwise.
+should still be a small page.
+
+VERIFIED LIVE (2026-07-22): a real run against real GOA data, 15 pages,
+totals {'name_matched': 7421, 'skipped': 3515, 'stars_added': 230} -- the
+URL syntax, field names, and _calibrated filter all confirmed correct.
 """
 
-import os
-from datetime import date, datetime, timedelta
+from datetime import date
 
-import requests
-
+from sync.archives._goa_common import fetch_reduced
 from sync.base import RawObservation
-
-BASE_URL = "https://archive.gemini.edu"
-DOWNLOAD_URL = BASE_URL + "/file/{filename}"
-
-COOKIE_ENV_VAR = "GOA_SESSION_COOKIE"
 
 INSTRUMENT = "GHOST"
 
@@ -79,60 +78,5 @@ FIRST_DATE = date(2023, 1, 1)
 WINDOW_DAYS = 90
 
 
-def _date_str(d: date) -> str:
-    return d.strftime("%Y%m%d")
-
-
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
-    cookie = os.environ.get(COOKIE_ENV_VAR)
-    if not cookie:
-        raise RuntimeError(
-            f"{COOKIE_ENV_VAR} not set. Log into {BASE_URL} (ORCID login recommended), "
-            "copy the gemini_archive_session cookie value from the post-login page, and "
-            f"set {COOKIE_ENV_VAR} to it before running the gemini_ghost archive."
-        )
-    cookies = {"gemini_archive_session": cookie}
-
-    window_start = date.fromisoformat(cursor["window_start"]) if "window_start" in cursor else FIRST_DATE
-    today = datetime.utcnow().date()
-
-    if window_start >= today:
-        return [], cursor
-
-    while True:
-        window_end = min(window_start + timedelta(days=WINDOW_DAYS), today)
-        url = "/".join([
-            BASE_URL, "jsonsummary", "canonical",
-            INSTRUMENT, "OBJECT", "science",
-            f"{_date_str(window_start)}-{_date_str(window_end)}",
-        ])
-        resp = requests.get(url, cookies=cookies, timeout=120)
-        if resp.status_code != 200 or not resp.headers.get("content-type", "").startswith("application/json"):
-            raise RuntimeError(
-                f"GOA request failed (status {resp.status_code}) -- {COOKIE_ENV_VAR} is likely "
-                "missing or stale. Re-login at https://archive.gemini.edu and refresh the env var."
-            )
-        records_json = resp.json()
-
-        rows = [r for r in records_json if "_calibrated" in r.get("filename", "")]
-        if rows or window_end >= today:
-            break
-        window_start = window_end
-
-    records = []
-    for r in rows:
-        filename = r["filename"]
-        ut_datetime = r.get("ut_datetime")
-        obs_date = datetime.fromisoformat(ut_datetime.replace("Z", "+00:00")).date() if ut_datetime else None
-        records.append(
-            RawObservation(
-                archive_obs_id=filename,
-                archive_url=DOWNLOAD_URL.format(filename=filename),
-                instrument=INSTRUMENT,
-                obs_date=obs_date,
-                program_id=r.get("observation_id") or r.get("data_label"),
-                raw_target_name=r.get("object"),
-            )
-        )
-
-    return records, {"window_start": window_end.isoformat()}
+    return fetch_reduced(cursor, INSTRUMENT, FIRST_DATE, WINDOW_DAYS, lambda filename: "_calibrated" in filename)
