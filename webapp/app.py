@@ -171,7 +171,7 @@ NAV_HTML = """
     <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
     <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
     <a href="/sky" class="{{ 'active' if active_tab == 'sky' else '' }}">Sky Map</a>
-    <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Time Plots</a>
+    <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Leaderboard</a>
     <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
   </nav>
@@ -555,7 +555,7 @@ TIMEPLOTS_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Time Plots</title>
+  <title>Spectra Database — Leaderboard</title>
   <style>""" + SHARED_STYLE + """
     #cumulative-plot, #period-plot { width: 100%; height: 500px; margin-top: 1rem; }
   </style>
@@ -569,16 +569,23 @@ TIMEPLOTS_TEMPLATE = """
     <div id="cumulative-plot"></div>
     <script>
       const periodLabels = {{ period_labels | tojson }};
+      const cumulativeSourceIds = {{ cumulative_traces | tojson }}.map(t => t.source_id);
       const cumulativeTraces = {{ cumulative_traces | tojson }}.map(t => ({
         x: periodLabels, y: t.counts, name: t.label,
-        mode: 'lines+markers', type: 'scatter',
+        mode: 'lines', line: { shape: 'spline' }, type: 'scatter',
         connectgaps: false,
+        hovertemplate: '%{fullData.name}<extra></extra>',
       }));
       Plotly.newPlot('cumulative-plot', cumulativeTraces, {
         xaxis: { title: 'Period' },
         yaxis: { title: 'Cumulative observations (log scale)', type: 'log' },
         hovermode: 'closest',
+        showlegend: false,
       }, { responsive: true });
+      document.getElementById('cumulative-plot').on('plotly_click', function(data) {
+        const idx = data.points[0].curveNumber;
+        window.location.href = '/?q=' + cumulativeSourceIds[idx];
+      });
     </script>
   {% else %}
     <p>No dated observations yet.</p>
@@ -589,16 +596,23 @@ TIMEPLOTS_TEMPLATE = """
   {% if period_traces %}
     <div id="period-plot"></div>
     <script>
+      const periodSourceIds = {{ period_traces | tojson }}.map(t => t.source_id);
       const periodTracesData = {{ period_traces | tojson }}.map(t => ({
         x: periodLabels, y: t.counts, name: t.label,
-        mode: 'lines+markers', type: 'scatter',
+        mode: 'lines', line: { shape: 'spline' }, type: 'scatter',
         connectgaps: false,
+        hovertemplate: '%{fullData.name}<extra></extra>',
       }));
       Plotly.newPlot('period-plot', periodTracesData, {
         xaxis: { title: 'Period' },
         yaxis: { title: 'Observations in period (log scale)', type: 'log' },
         hovermode: 'closest',
+        showlegend: false,
       }, { responsive: true });
+      document.getElementById('period-plot').on('plotly_click', function(data) {
+        const idx = data.points[0].curveNumber;
+        window.location.href = '/?q=' + periodSourceIds[idx];
+      });
     </script>
   {% else %}
     <p>No dated observations yet.</p>
@@ -680,11 +694,24 @@ def timeplots():
 
         for gid in sorted(cast):
             label = labels_by_id.get(gid, str(gid))
+            # Gaia source_ids are 19-digit integers, well past JS's 53-bit
+            # safe-integer range — serialized as a string so a click-through
+            # can't get silently rounded by the browser (same issue fixed
+            # for the CMD/Sky Map click-throughs).
+            source_id = str(gid)
             cumulative_traces.append(
-                {"label": label, "counts": [cumulative[gid][k] if gid in cumulative_top5[k] else None for k in period_keys]}
+                {
+                    "label": label,
+                    "source_id": source_id,
+                    "counts": [cumulative[gid][k] if gid in cumulative_top5[k] else None for k in period_keys],
+                }
             )
             period_traces.append(
-                {"label": label, "counts": [within[gid].get(k, 0) if gid in period_top5[k] else None for k in period_keys]}
+                {
+                    "label": label,
+                    "source_id": source_id,
+                    "counts": [within[gid].get(k, 0) if gid in period_top5[k] else None for k in period_keys],
+                }
             )
 
     return render_template_string(
