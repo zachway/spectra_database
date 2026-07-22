@@ -881,9 +881,16 @@ NOT_YET_TRACKED = [
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive at all -- proposal listing is empty and the only data endpoint 401s (PI-login only); investigated, not yet worth the build"),
     ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
+    ("—", "DAO (Dominion Astrophysical Observatory, Canada)", "confirmed live: already on the same CADC TAP endpoint used by cfht_cadc.py/gemini.py, obs_collection='DAO' -- 263,980 spectrum rows, real ra/dec/target_name, 1986-present (Cassegrain + coude spectrographs). Same query shape as gemini.py, just not wired up yet -- highest-value remaining gap found so far"),
     ("—", "HARPS-N / TNG (IA2 archive, archives.ia2.inaf.it/tng)", "not yet investigated -- a separate public archive from ESO's HARPS (La Silla), likely relevant given existing RV-spectrograph coverage (CARMENES)"),
-    ("—", "SOPHIE / ELODIE (OHP, atlas.obs-hp.fr)", "not yet investigated -- public archive with a documented advanced query interface and direct per-spectrum URLs; French RV-survey counterpart to CARMENES/HARPS-N"),
+    ("—", "ELODIE (OHP, atlas.obs-hp.fr/elodie)", "not yet investigated -- historical archive (1994-2006), predecessor to SOPHIE at the same site; documented HTTP-based per-object query with ASCII/FITS output, looks tractable"),
+    ("—", "SOPHIE (OHP, atlas.obs-hp.fr/sophie)", "not yet investigated -- public archive with a documented advanced query interface and direct per-spectrum URLs (wget by sequence number); French RV-survey counterpart to CARMENES/HARPS-N"),
+    ("—", "GTC (Gran Telescopio Canarias, Spain)", "not yet investigated -- confirmed VO-compliant public archive (1yr proprietary period) at gtc.sdc.cab.inta-csic.es, redirects to a /gtc_tap/ path that 403s on a direct probe; needs a proper session to find the real endpoint"),
+    ("—", "Asiago Observatory (Italy, IA2)", "not yet investigated -- same IA2 infrastructure as HARPS-N/TNG above; digitized spectra from 1951-1994 plus modern data, 2yr proprietary period"),
+    ("—", "ING Archive (WHT/INT/JKT, La Palma, casu.ast.cam.ac.uk/casuadc/ingarch)", "not yet investigated -- general PI archive (~430,000 observations, multiple spectrographs incl. ISIS) in the same vein as ESO/Gemini/KOA/CFHT, but access looked like a web form rather than a TAP/API on first pass"),
+    ("—", "BeSS (Be Star Spectra, France, basebe.obspm.fr)", "not yet investigated -- 364,330 spectra of individually-named Be stars (professional + amateur, validated), likely good overlap with a curated star list; only a web query form found so far, no confirmed API"),
     ("—", "SALT HRS (SAAO)", "not yet investigated -- public archive exists (1yr proprietary period) but no bulk/TAP access method confirmed yet"),
+    ("—", "IAO Hanle (HFOSC/HESP, India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, Lick Hamilton (UC-community password only), OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these; same shape as NAOJ/OIRSA/ARIES DOT above"),
 ]
 
 ARCHIVE_STATUS_TEMPLATE = """
