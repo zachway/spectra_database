@@ -41,7 +41,10 @@ app = Flask(__name__)
 # query — per project to-do, laptop/small-server scale, not a bulk pipeline.
 MAX_NAME_LOOKUPS = 2000
 
-DATA_TABLES = ("stars", "archives", "spectroscopy_holdings", "archive_sync_state", "leaderboard", "cmd_stars")
+DATA_TABLES = (
+    "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
+    "leaderboard", "cmd_stars", "archive_status",
+)
 
 
 def _resolve_data_source() -> str:
@@ -150,19 +153,6 @@ def _group_holdings(holdings: list[dict]) -> list[dict]:
     return [groups[k] for k in order]
 
 
-def _archive_status() -> list[dict]:
-    cur = get_cursor()
-    cur.execute(
-        """
-        SELECT a.display_name, s.last_run_at, s.last_run_status
-        FROM archives a
-        LEFT JOIN archive_sync_state s ON s.archive_code = a.archive_code
-        ORDER BY a.display_name
-        """
-    )
-    return _rows_as_dicts(cur)
-
-
 # How many stars the CMD plots as individually-clickable points. The
 # underlying list (the CMD_SAMPLE_SIZE most-observed stars with valid
 # photometry) is precomputed by scripts.export_to_parquet, not sampled here
@@ -184,6 +174,7 @@ NAV_HTML = """
     <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
     <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Leaderboard</a>
     <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
+    <a href="/status" class="{{ 'active' if active_tab == 'archive_status' else '' }}">Archive Status</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
   </nav>
 """
@@ -298,18 +289,6 @@ PAGE_TEMPLATE = """
     </table>
   {% endif %}
 
-  <hr>
-  <h2>Archive status</h2>
-  <table>
-    <tr><th>Archive</th><th>Last updated</th><th>Status</th></tr>
-    {% for a in archive_status %}
-    <tr>
-      <td>{{ a.display_name }}</td>
-      <td>{{ a.last_run_at or "never" }}</td>
-      <td>{{ a.last_run_status or "—" }}</td>
-    </tr>
-    {% endfor %}
-  </table>
 </body>
 </html>
 """
@@ -321,7 +300,6 @@ def _blank(query=None, error=None, resolved_source_id=None):
         error=error, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        archive_status=_archive_status(),
         active_tab="search",
     )
 
@@ -332,7 +310,6 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
-        archive_status=_archive_status(),
         active_tab="search",
     )
 
@@ -386,7 +363,6 @@ def search():
         error=None, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        archive_status=_archive_status(),
         active_tab="search",
     )
 
@@ -875,6 +851,97 @@ def stats():
     )
 
 
+# (category db value, display label) -- fixed order so every archive's row
+# lines up under the same columns regardless of which categories it
+# actually has rows in. Matches the match-method/status names described on
+# the /info page.
+ARCHIVE_STATUS_CATEGORIES = [
+    ("direct_gaia_column", "Direct Gaia"),
+    ("name_resolved", "Name resolved"),
+    ("positional_easy_match", "Positional"),
+    ("needs_review", "Needs review"),
+    ("skipped", "Skipped"),
+]
+
+ARCHIVE_STATUS_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Archive Status</title>
+  <style>""" + SHARED_STYLE + """</style>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <p class="note">Per-archive sync status and match breakdown, precomputed at export time (see the Stats tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them.</p>
+  <table>
+    <tr>
+      <th>Archive</th><th>Last updated</th><th>Status</th><th>Total</th>
+      {% for label in category_labels %}<th>{{ label }}</th>{% endfor %}
+    </tr>
+    {% for a in archives %}
+    <tr>
+      <td>{{ a.display_name }}</td>
+      <td>{{ a.last_run_at or "never" }}</td>
+      <td>{{ a.last_run_status or "—" }}</td>
+      <td>{{ "{:,}".format(a.total) }}</td>
+      {% for c in a.counts %}<td>{{ "{:,}".format(c) }}</td>{% endfor %}
+    </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>
+"""
+
+
+@app.route("/status")
+def archive_status():
+    # Precomputed by scripts.export_to_parquet -- see its module for why
+    # (same reasoning as the Leaderboard/Stats: the per-category counts
+    # need a GROUP BY over the full, ever-growing holdings table).
+    cur = get_cursor()
+    cur.execute(
+        "SELECT archive_code, display_name, last_run_at, last_run_status, rows_seen_last_run, category, n "
+        "FROM archive_status ORDER BY display_name"
+    )
+    rows = _rows_as_dicts(cur)
+
+    by_archive: dict[str, dict] = {}
+    order: list[str] = []
+    for r in rows:
+        code = r["archive_code"]
+        if code not in by_archive:
+            by_archive[code] = {
+                "display_name": r["display_name"],
+                "last_run_at": r["last_run_at"],
+                "last_run_status": r["last_run_status"],
+                "counts": {},
+                "total": 0,
+            }
+            order.append(code)
+        if r["category"] is not None:
+            by_archive[code]["counts"][r["category"]] = r["n"]
+            by_archive[code]["total"] += r["n"]
+
+    archives = [
+        {
+            "display_name": by_archive[code]["display_name"],
+            "last_run_at": by_archive[code]["last_run_at"],
+            "last_run_status": by_archive[code]["last_run_status"],
+            "total": by_archive[code]["total"],
+            "counts": [by_archive[code]["counts"].get(cat, 0) for cat, _ in ARCHIVE_STATUS_CATEGORIES],
+        }
+        for code in order
+    ]
+
+    return render_template_string(
+        ARCHIVE_STATUS_TEMPLATE,
+        archives=archives,
+        category_labels=[label for _, label in ARCHIVE_STATUS_CATEGORIES],
+        active_tab="archive_status",
+    )
+
+
 INFO_TEMPLATE = """
 <!doctype html>
 <html>
@@ -904,7 +971,7 @@ INFO_TEMPLATE = """
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
   </ul>
 
-  <p class="note">See the Stats tab for current holdings-by-archive and matches-by-method breakdowns, and the Search page's Archive status footer for when each archive was last synced.</p>
+  <p class="note">See the Archive Status tab for when each archive was last synced and a per-archive match breakdown, and the Stats tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
 
   <h2>Needs-review queue</h2>
   <p class="note">Ambiguous positional matches — 2+ tracked stars fell within the 1.0" radius of the archive's reported position, so no single star was assigned. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>

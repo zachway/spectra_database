@@ -30,6 +30,38 @@ logger = logging.getLogger(__name__)
 
 TABLES = ["stars", "archives", "spectroscopy_holdings", "archive_sync_state"]
 
+# Per-archive status breakdown (last sync time/status, plus a count per
+# match category) for the Archive Status page. Was assembled live in
+# webapp.app from a plain LEFT JOIN of archives/archive_sync_state -- cheap
+# on its own (both are small tables), but the richer per-archive counts the
+# page now shows (how many direct-Gaia-matched, name-resolved, positional,
+# needs-review, skipped) need a GROUP BY over the full, ever-growing
+# holdings table, same OOM-shaped risk as everything else precomputed here.
+# COALESCE(match_method, match_status) collapses to a single category label
+# per row: match_method itself (direct_gaia_column/name_resolved/
+# positional_easy_match) for matched rows, or match_status (skipped/
+# needs_review) for everything else, matching the categories already
+# described on the /info page.
+ARCHIVE_STATUS_QUERY = """
+WITH counts AS (
+    SELECT archive_code, COALESCE(match_method, match_status) AS category, count(*) AS n
+    FROM pg.spectroscopy_holdings
+    GROUP BY archive_code, category
+)
+SELECT
+    a.archive_code,
+    a.display_name,
+    s.last_run_at,
+    s.last_run_status,
+    s.rows_seen_last_run,
+    c.category,
+    c.n
+FROM pg.archives a
+LEFT JOIN pg.archive_sync_state s ON s.archive_code = a.archive_code
+LEFT JOIN counts c ON c.archive_code = a.archive_code
+ORDER BY a.display_name, c.category
+"""
+
 LEADERBOARD_TOP_N = 10
 
 # Fully precomputed Leaderboard chart data — not just the raw per-(star,
@@ -254,6 +286,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
     cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
     _atomic_copy(con, CMD_STARS_QUERY, cmd_stars_path)
     logger.info("exported cmd_stars -> %s", cmd_stars_path)
+
+    archive_status_path = os.path.join(out_dir, "archive_status.parquet")
+    _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
+    logger.info("exported archive_status -> %s", archive_status_path)
 
     export_stats_summary(con, out_dir)
 
