@@ -32,6 +32,8 @@ the raw-position audit trail same as every other archive, not just for
 records that fall through to positional matching.
 """
 
+from __future__ import annotations
+
 import re
 
 import astropy.units as u
