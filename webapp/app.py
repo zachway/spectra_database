@@ -870,13 +870,13 @@ ARCHIVE_STATUS_CATEGORIES = [
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
     ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "hits a server-side timeout on the same query shape used for HST; not yet worked around"),
-    ("CARMENES", "NIR channel (0.96-1.71 μm)", "only the VIS channel (0.52-0.96 μm) is tracked currently"),
-    ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
+    ("CARMENES", "co-added template library (TAC)", "the general CAHA archive (sync/archives/carmenes_caha.py) covers per-observation raw spectra, both channels; the separately co-added cross-correlation templates are a different product, not covered by that same query"),
     ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
     ("—", "OIRSA (CfA)", "a ~2011 stateful session-driven search wizard with no documented direct-query API; investigated, meaningfully more reverse-engineering than any archive implemented so far"),
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive at all -- proposal listing is empty and the only data endpoint 401s (PI-login only); investigated, not yet worth the build"),
     ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently. The catalogue half is trivial and confirmed live -- med_catalogue table on the same SQL API, 46,953,010 rows, gaia_source_id 100% populated (even better than LRS's) -- but LRS's spectrum-file URL pattern (.../spectrum/fits/{obsid}) 404s for MRS's mobsid/obsid, so the real deep-link needs its own investigation pass before this can ship"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
+    ("—", "JUST (Jiao-tong University Spectroscopic Telescope, Lenghu, China)", "confirmed live: the site's own Data page reads \"Coming soon\" (still template placeholder content as of this check) -- a 4.4m facility, not yet public"),
     ("—", "HARPS-N / TNG (IA2 archive, archives.ia2.inaf.it/tng)", "not yet investigated -- a separate public archive from ESO's HARPS (La Silla), likely relevant given existing RV-spectrograph coverage (CARMENES)"),
     ("—", "ELODIE (OHP, atlas.obs-hp.fr/elodie)", "not yet investigated -- historical archive (1994-2006), predecessor to SOPHIE at the same site; documented HTTP-based per-object query with ASCII/FITS output, looks tractable"),
     ("—", "SOPHIE (OHP, atlas.obs-hp.fr/sophie)", "not yet investigated -- public archive with a documented advanced query interface and direct per-spectrum URLs (wget by sequence number); French RV-survey counterpart to CARMENES/HARPS-N"),
