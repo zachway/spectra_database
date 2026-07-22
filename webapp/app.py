@@ -870,8 +870,6 @@ ARCHIVE_STATUS_CATEGORIES = [
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
     ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "hits a server-side timeout on the same query shape used for HST; not yet worked around"),
-    ("MAST", "IUE, FUSE (older collections)", "not yet checked at all -- unknown whether the same ivoa.obscore query shape even works for these"),
-    ("LBT — PEPSI", "MODS, LUCI", "also spectroscopy-capable, not yet added"),
     ("CARMENES", "NIR channel (0.96-1.71 μm)", "only the VIS channel (0.52-0.96 μm) is tracked currently"),
     ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
     ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
