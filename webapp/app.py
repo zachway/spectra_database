@@ -170,7 +170,6 @@ NAV_HTML = """
   <nav class="tabs">
     <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
     <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
-    <a href="/sky" class="{{ 'active' if active_tab == 'sky' else '' }}">Sky Map</a>
     <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Leaderboard</a>
     <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
