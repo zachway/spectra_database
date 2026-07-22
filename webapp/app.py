@@ -871,8 +871,6 @@ ARCHIVE_STATUS_CATEGORIES = [
 NOT_YET_TRACKED = [
     ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "hits a server-side timeout on the same query shape used for HST; not yet worked around"),
     ("MAST", "IUE, FUSE (older collections)", "not yet checked at all -- unknown whether the same ivoa.obscore query shape even works for these"),
-    ("NOIRLab Astro Data Archive", "CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI", "share the same API as the currently-tracked SOAR Goodman Spectrograph, just not wired up yet"),
-    ("Keck Observatory Archive", "DEIMOS, ESI, LRIS, NIRES", "only HIRES is tracked currently"),
     ("LBT — PEPSI", "MODS, LUCI", "also spectroscopy-capable, not yet added"),
     ("CARMENES", "NIR channel (0.96-1.71 μm)", "only the VIS channel (0.52-0.96 μm) is tracked currently"),
     ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
@@ -881,7 +879,6 @@ NOT_YET_TRACKED = [
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive at all -- proposal listing is empty and the only data endpoint 401s (PI-login only); investigated, not yet worth the build"),
     ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
-    ("—", "DAO (Dominion Astrophysical Observatory, Canada)", "confirmed live: already on the same CADC TAP endpoint used by cfht_cadc.py/gemini.py, obs_collection='DAO' -- 263,980 spectrum rows, real ra/dec/target_name, 1986-present (Cassegrain + coude spectrographs). Same query shape as gemini.py, just not wired up yet -- highest-value remaining gap found so far"),
     ("—", "HARPS-N / TNG (IA2 archive, archives.ia2.inaf.it/tng)", "not yet investigated -- a separate public archive from ESO's HARPS (La Silla), likely relevant given existing RV-spectrograph coverage (CARMENES)"),
     ("—", "ELODIE (OHP, atlas.obs-hp.fr/elodie)", "not yet investigated -- historical archive (1994-2006), predecessor to SOPHIE at the same site; documented HTTP-based per-object query with ASCII/FITS output, looks tractable"),
     ("—", "SOPHIE (OHP, atlas.obs-hp.fr/sophie)", "not yet investigated -- public archive with a documented advanced query interface and direct per-spectrum URLs (wget by sequence number); French RV-survey counterpart to CARMENES/HARPS-N"),

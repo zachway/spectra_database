@@ -34,6 +34,7 @@ import psycopg
 from sync.archives import (
     carmenes,
     cfht_cadc,
+    dao,
     desi,
     eso,
     galah,
@@ -60,6 +61,7 @@ ARCHIVES = {
     "galah": galah.fetch,
     "eso": eso.fetch,
     "cfht_cadc": cfht_cadc.fetch,
+    "dao": dao.fetch,
     "gemini": gemini.fetch,
     "gemini_ghost": gemini_ghost.fetch,
     "gemini_igrins": gemini_igrins.fetch,
