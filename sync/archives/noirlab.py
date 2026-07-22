@@ -28,6 +28,17 @@ instrument value.
 No hard row cap found, but slower than most: 20,000 rows took 28.7s.
 Paginated at 10,000/page here.
 
+The `["dateobs_center", low, high]` range filter is inclusive on both ends
+(confirmed live — no exclusive/">" variant found in the API). Naively
+using the watermark as-is for `low` re-fetches the same boundary row on
+every page once the cursor catches up to the currently-available data —
+confirmed live in production: cursor stuck at the exact same
+`last_dateobs` for 150+ consecutive runs, re-matching the same single
+record every ~1.5s forever, never converging. Fixed by querying from one
+microsecond past the watermark (dateobs_center has microsecond
+precision) instead of the watermark itself; the persisted cursor value
+is untouched, only the query's lower bound is shifted.
+
 OBJECT (the raw FITS header target name) is fetched and passed through as
 raw_target_name, but confirmed live it's frequently NOT a resolvable star
 name at all — e.g. "SMC #19 Spec HgAr" (a survey-internal field id, and
@@ -41,6 +52,8 @@ break anything — it's just not the fix for NOIRLab's positional-match rate
 that a clean target-name field would have been.
 """
 
+from datetime import datetime, timedelta
+
 import requests
 from astropy.time import Time
 
@@ -51,6 +64,11 @@ FIND_URL = "https://astroarchive.noirlab.edu/api/adv_search/find/"
 PAGE_SIZE = 10000
 
 INSTRUMENT = "goodman"
+
+
+def _next_instant(dateobs: str) -> str:
+    dt = datetime.fromisoformat(dateobs.replace("Z", "+00:00")) + timedelta(microseconds=1)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
@@ -64,7 +82,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ["instrument", INSTRUMENT],
                 ["proc_type", "raw"],
                 ["obs_type", "object"],
-                ["dateobs_center", last_dateobs, "2099-01-01"],
+                ["dateobs_center", _next_instant(last_dateobs), "2099-01-01"],
             ],
         },
         timeout=120,
