@@ -563,7 +563,7 @@ TIMEPLOTS_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">Fixed 6-month periods. At each period, two top-5 lists are computed: the 5 stars with the most cumulative (all-time-so-far) observations, and the 5 with the most observations within that period alone. Every star that ever broke into either list, at any period, gets a line in both charts below — so there can be more than 5 lines total, and a line can start partway through the timeline (whenever that star first qualified). Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's reflected here. Log scale, so a period with zero observations for a star just leaves a gap rather than a dip to zero.</p>
+  <p class="note">Fixed 6-month periods. At each period, two top-5 lists are computed: the 5 stars with the most cumulative (all-time-so-far) observations, and the 5 with the most observations within that period alone. Every star that ever broke into either list, at any period, gets a line in both charts below — so there can be more than 5 lines total, and a line can start partway through the timeline (whenever that star first qualified) and stop appearing again once it drops out of that period's top 5, rather than dragging a stale line across the whole chart. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's reflected here. Log scale, so a period with zero observations for a star just leaves a gap rather than a dip to zero.</p>
   <h2>Cumulative observations</h2>
   {% if cumulative_traces %}
     <div id="cumulative-plot"></div>
@@ -655,11 +655,21 @@ def timeplots():
         # A star earns a line in both charts if it was ever top-5 by either
         # metric at any single period — not just the eventual all-time top
         # 5, so a star that led early and later fell behind still shows up.
+        # But it only gets plotted for the specific periods where it was
+        # actually top-5 by that period's metric — otherwise a star that
+        # broke in once would drag a line across every period forever,
+        # cluttering the chart with stars that have since dropped out.
         TOP_N = 5
+        period_top5: dict[tuple, set[int]] = {}
+        cumulative_top5: dict[tuple, set[int]] = {}
         cast: set[int] = set()
         for key in period_keys:
-            cast.update(sorted(all_star_ids, key=lambda gid: (-within[gid].get(key, 0), gid))[:TOP_N])
-            cast.update(sorted(all_star_ids, key=lambda gid: (-cumulative[gid][key], gid))[:TOP_N])
+            p_top = set(sorted(all_star_ids, key=lambda gid: (-within[gid].get(key, 0), gid))[:TOP_N])
+            c_top = set(sorted(all_star_ids, key=lambda gid: (-cumulative[gid][key], gid))[:TOP_N])
+            period_top5[key] = p_top
+            cumulative_top5[key] = c_top
+            cast.update(p_top)
+            cast.update(c_top)
 
         labels_by_id: dict[int, str] = {}
         if cast:
@@ -671,9 +681,11 @@ def timeplots():
         for gid in sorted(cast):
             label = labels_by_id.get(gid, str(gid))
             cumulative_traces.append(
-                {"label": label, "counts": [cumulative[gid][k] or None for k in period_keys]}
+                {"label": label, "counts": [cumulative[gid][k] if gid in cumulative_top5[k] else None for k in period_keys]}
             )
-            period_traces.append({"label": label, "counts": [within[gid].get(k, 0) or None for k in period_keys]})
+            period_traces.append(
+                {"label": label, "counts": [within[gid].get(k, 0) if gid in period_top5[k] else None for k in period_keys]}
+            )
 
     return render_template_string(
         TIMEPLOTS_TEMPLATE,
