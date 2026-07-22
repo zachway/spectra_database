@@ -875,7 +875,7 @@ NOT_YET_TRACKED = [
     ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
     ("—", "OIRSA (CfA)", "a ~2011 stateful session-driven search wizard with no documented direct-query API; investigated, meaningfully more reverse-engineering than any archive implemented so far"),
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive at all -- proposal listing is empty and the only data endpoint 401s (PI-login only); investigated, not yet worth the build"),
-    ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
+    ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently. The catalogue half is trivial and confirmed live -- med_catalogue table on the same SQL API, 46,953,010 rows, gaia_source_id 100% populated (even better than LRS's) -- but LRS's spectrum-file URL pattern (.../spectrum/fits/{obsid}) 404s for MRS's mobsid/obsid, so the real deep-link needs its own investigation pass before this can ship"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "HARPS-N / TNG (IA2 archive, archives.ia2.inaf.it/tng)", "not yet investigated -- a separate public archive from ESO's HARPS (La Silla), likely relevant given existing RV-spectrograph coverage (CARMENES)"),
     ("—", "ELODIE (OHP, atlas.obs-hp.fr/elodie)", "not yet investigated -- historical archive (1994-2006), predecessor to SOPHIE at the same site; documented HTTP-based per-object query with ASCII/FITS output, looks tractable"),
