@@ -30,23 +30,38 @@ logger = logging.getLogger(__name__)
 
 TABLES = ["stars", "archives", "spectroscopy_holdings", "archive_sync_state"]
 
-# Per-archive status breakdown (last sync time/status, plus a count per
-# match category) for the Archive Status page. Was assembled live in
-# webapp.app from a plain LEFT JOIN of archives/archive_sync_state -- cheap
-# on its own (both are small tables), but the richer per-archive counts the
-# page now shows (how many direct-Gaia-matched, name-resolved, positional,
-# needs-review, skipped) need a GROUP BY over the full, ever-growing
-# holdings table, same OOM-shaped risk as everything else precomputed here.
-# COALESCE(match_method, match_status) collapses to a single category label
-# per row: match_method itself (direct_gaia_column/name_resolved/
-# positional_easy_match) for matched rows, or match_status (skipped/
-# needs_review) for everything else, matching the categories already
-# described on the /info page.
+# Per-archive status breakdown (last sync time/status, observation date
+# range, plus a count per match category) for the Archive Status page. Was
+# assembled live in webapp.app from a plain LEFT JOIN of
+# archives/archive_sync_state -- cheap on its own (both are small tables),
+# but the richer per-archive counts the page now shows (how many
+# direct-Gaia-matched, name-resolved, positional, needs-review, skipped)
+# need a GROUP BY over the full, ever-growing holdings table, same
+# OOM-shaped risk as everything else precomputed here.
+#
+# category must be a CASE, not COALESCE(match_method, match_status) --
+# confirmed live that match_method is NOT null on skipped/needs_review rows
+# (it retains whichever method was *attempted*, e.g. positional_easy_match
+# tried and failed -> skipped, but match_method still says
+# positional_easy_match). COALESCE would pick match_method every time it's
+# non-null, silently recategorizing skipped/needs_review rows under
+# whatever method almost worked -- confirmed live as a real bug: 5.7M
+# skipped rows were showing up as "Positional" matches on the Archive
+# Status page instead of "Skipped".
 ARCHIVE_STATUS_QUERY = """
 WITH counts AS (
-    SELECT archive_code, COALESCE(match_method, match_status) AS category, count(*) AS n
+    SELECT
+        archive_code,
+        CASE WHEN match_status = 'matched' THEN match_method ELSE match_status END AS category,
+        count(*) AS n
     FROM pg.spectroscopy_holdings
     GROUP BY archive_code, category
+),
+date_ranges AS (
+    SELECT archive_code, min(obs_date) AS min_obs_date, max(obs_date) AS max_obs_date
+    FROM pg.spectroscopy_holdings
+    WHERE obs_date IS NOT NULL
+    GROUP BY archive_code
 )
 SELECT
     a.archive_code,
@@ -54,10 +69,13 @@ SELECT
     s.last_run_at,
     s.last_run_status,
     s.rows_seen_last_run,
+    d.min_obs_date,
+    d.max_obs_date,
     c.category,
     c.n
 FROM pg.archives a
 LEFT JOIN pg.archive_sync_state s ON s.archive_code = a.archive_code
+LEFT JOIN date_ranges d ON d.archive_code = a.archive_code
 LEFT JOIN counts c ON c.archive_code = a.archive_code
 ORDER BY a.display_name, c.category
 """

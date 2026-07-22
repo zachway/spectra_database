@@ -877,6 +877,7 @@ NOT_YET_TRACKED = [
     ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
     ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
     ("—", "OIRSA (CfA)", "a ~2011 stateful session-driven search wizard with no documented direct-query API; investigated, meaningfully more reverse-engineering than any archive implemented so far"),
+    ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
 ]
 
@@ -890,10 +891,10 @@ ARCHIVE_STATUS_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">Per-archive sync status and match breakdown, precomputed at export time (see the Stats tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them.</p>
+  <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Stats tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them.</p>
   <table>
     <tr>
-      <th>Archive</th><th>Last updated</th><th>Status</th><th>Total</th>
+      <th>Archive</th><th>Last synced</th><th>Status</th><th>Observations span</th><th>Total</th>
       {% for label in category_labels %}<th>{{ label }}</th>{% endfor %}
     </tr>
     {% for a in archives %}
@@ -901,6 +902,7 @@ ARCHIVE_STATUS_TEMPLATE = """
       <td>{{ a.display_name }}</td>
       <td>{{ a.last_run_at or "never" }}</td>
       <td>{{ a.last_run_status or "—" }}</td>
+      <td>{{ a.obs_span or "—" }}</td>
       <td>{{ "{:,}".format(a.total) }}</td>
       {% for c in a.counts %}<td>{{ "{:,}".format(c) }}</td>{% endfor %}
     </tr>
@@ -943,7 +945,8 @@ def archive_status():
     # need a GROUP BY over the full, ever-growing holdings table).
     cur = get_cursor()
     cur.execute(
-        "SELECT archive_code, display_name, last_run_at, last_run_status, rows_seen_last_run, category, n "
+        "SELECT archive_code, display_name, last_run_at, last_run_status, rows_seen_last_run, "
+        "min_obs_date, max_obs_date, category, n "
         "FROM archive_status ORDER BY display_name"
     )
     rows = _rows_as_dicts(cur)
@@ -955,8 +958,13 @@ def archive_status():
         if code not in by_archive:
             by_archive[code] = {
                 "display_name": r["display_name"],
-                "last_run_at": r["last_run_at"],
+                # Just a date -- the exact time this ran isn't useful and
+                # made an archive mid-resync look like a finished, precise
+                # measurement rather than a snapshot of work in progress.
+                "last_run_at": r["last_run_at"].date().isoformat() if r["last_run_at"] else None,
                 "last_run_status": r["last_run_status"],
+                "min_obs_date": r["min_obs_date"],
+                "max_obs_date": r["max_obs_date"],
                 "counts": {},
                 "total": 0,
             }
@@ -970,6 +978,11 @@ def archive_status():
             "display_name": by_archive[code]["display_name"],
             "last_run_at": by_archive[code]["last_run_at"],
             "last_run_status": by_archive[code]["last_run_status"],
+            "obs_span": (
+                f"{by_archive[code]['min_obs_date']} to {by_archive[code]['max_obs_date']}"
+                if by_archive[code]["min_obs_date"]
+                else None
+            ),
             "total": by_archive[code]["total"],
             "counts": [by_archive[code]["counts"].get(cat, 0) for cat, _ in ARCHIVE_STATUS_CATEGORIES],
         }
