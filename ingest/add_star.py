@@ -12,6 +12,7 @@ import argparse
 import logging
 import os
 import socket
+import time
 
 import psycopg
 from astroquery.gaia import Gaia
@@ -74,6 +75,37 @@ RVS_DEEP_LINK = (
     "?RETRIEVAL_TYPE=RVS&ID=Gaia+DR3+{source_id}&DATA_STRUCTURE=INDIVIDUAL"
 )
 
+GAIA_LAUNCH_JOB_ATTEMPTS = 5
+GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
+
+
+def _launch_gaia_job(query: str):
+    """Gaia.launch_job, retried on transient TAP failures.
+
+    Confirmed live: after ~10 back-to-back batch queries in a few minutes
+    (bulk star discovery during a sync run), the Gaia TAP+ endpoint started
+    handing back an HTML error page instead of the expected gzipped VOTable
+    response. astroquery doesn't treat that as a clean HTTP error — it
+    surfaces many calls deep as a raw gzip.BadGzipFile or astropy VOTable
+    E19 parse error, so this catches broadly rather than one specific
+    exception type. A short exponential backoff clears it within a couple of
+    tries without needing to fail the whole archive sync over one blip.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(GAIA_LAUNCH_JOB_ATTEMPTS):
+        try:
+            return Gaia.launch_job(query)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < GAIA_LAUNCH_JOB_ATTEMPTS - 1:
+                delay = GAIA_LAUNCH_JOB_BACKOFF_SECONDS * (2**attempt)
+                logger.warning(
+                    "Gaia TAP query failed (attempt %d/%d), retrying in %ds: %s",
+                    attempt + 1, GAIA_LAUNCH_JOB_ATTEMPTS, delay, exc,
+                )
+                time.sleep(delay)
+    raise last_exc
+
 
 def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
     """Resolve a star name to a Gaia DR3 source_id via SIMBAD.
@@ -95,7 +127,7 @@ def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
         return int(gaia_tokens[0].removeprefix("Gaia DR3 "))
 
     ra, dec = float(result["ra"][0]), float(result["dec"][0])
-    job = Gaia.launch_job(GAIA_CONE_QUERY.format(ra=ra, dec=dec, radius_deg=cone_radius_arcsec / 3600))
+    job = _launch_gaia_job(GAIA_CONE_QUERY.format(ra=ra, dec=dec, radius_deg=cone_radius_arcsec / 3600))
     table = job.get_results()
     if len(table) == 0:
         raise ValueError(
@@ -125,7 +157,7 @@ def fetch_name_aliases(gaia_source_id: int) -> list[str]:
 
 
 def fetch_gaia_row(gaia_source_id: int) -> dict:
-    job = Gaia.launch_job(GAIA_QUERY.format(source_id=gaia_source_id))
+    job = _launch_gaia_job(GAIA_QUERY.format(source_id=gaia_source_id))
     table = job.get_results()
     if len(table) == 0:
         raise ValueError(f"Gaia source_id {gaia_source_id} not found in gaiadr3.gaia_source")
@@ -239,7 +271,7 @@ def add_stars_batch(
     for i in range(0, len(unique_ids), BATCH_CHUNK_SIZE):
         chunk = unique_ids[i : i + BATCH_CHUNK_SIZE]
         id_list = ",".join(str(sid) for sid in chunk)
-        job = Gaia.launch_job(GAIA_BATCH_QUERY.format(id_list=id_list))
+        job = _launch_gaia_job(GAIA_BATCH_QUERY.format(id_list=id_list))
         table = job.get_results()
 
         with conn.cursor() as cur:
