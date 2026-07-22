@@ -43,7 +43,7 @@ MAX_NAME_LOOKUPS = 2000
 
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
-    "leaderboard", "cmd_stars", "archive_status",
+    "leaderboard", "cmd_stars", "archive_status", "instruments",
 )
 
 
@@ -863,6 +863,20 @@ ARCHIVE_STATUS_CATEGORIES = [
     ("skipped", "Skipped"),
 ]
 
+# Known instrument-coverage gaps -- unlike everything else on this page,
+# this can't be derived from the database (by definition, nothing not
+# tracked shows up in holdings), so it's hand-maintained here rather than
+# precomputed. Kept in sync with each archive module's docstring; update
+# both when a gap gets closed. (archive display_name, what's missing, why)
+NOT_YET_TRACKED = [
+    ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "hits a server-side timeout on the same query shape used for HST; not yet worked around"),
+    ("NOIRLab Astro Data Archive", "CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI", "share the same API as the currently-tracked SOAR Goodman Spectrograph, just not wired up yet"),
+    ("Keck Observatory Archive", "DEIMOS, ESI, LRIS, NIRES", "only HIRES is tracked currently"),
+    ("LBT — PEPSI", "MODS, LUCI", "also spectroscopy-capable, not yet added"),
+    ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
+    ("—", "WEAVE, 4MOST", "surveys not yet public"),
+]
+
 ARCHIVE_STATUS_TEMPLATE = """
 <!doctype html>
 <html>
@@ -887,6 +901,31 @@ ARCHIVE_STATUS_TEMPLATE = """
       <td>{{ "{:,}".format(a.total) }}</td>
       {% for c in a.counts %}<td>{{ "{:,}".format(c) }}</td>{% endfor %}
     </tr>
+    {% endfor %}
+  </table>
+
+  <hr>
+  <h2>Tracked instruments</h2>
+  <p class="note">Every distinct instrument name seen in current holdings, grouped by archive. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it.</p>
+  {% for a in instruments %}
+  <details>
+    <summary>{{ a.display_name }} ({{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }})</summary>
+    <table>
+      <tr><th>Instrument</th><th>Holdings</th></tr>
+      {% for i in a.instruments %}
+      <tr><td>{{ i.instrument }}</td><td>{{ "{:,}".format(i.n) }}</td></tr>
+      {% endfor %}
+    </table>
+  </details>
+  {% endfor %}
+
+  <hr>
+  <h2>Known gaps</h2>
+  <p class="note">Spectrographs known to exist at an already-implemented archive (or whole archives) that aren't tracked yet -- hand-maintained, not derived from the database. See More Info for the broader "pointer database" scope note.</p>
+  <table>
+    <tr><th>Archive</th><th>Not yet tracked</th><th>Why</th></tr>
+    {% for archive, missing, why in not_yet_tracked %}
+    <tr><td>{{ archive }}</td><td>{{ missing }}</td><td>{{ why }}</td></tr>
     {% endfor %}
   </table>
 </body>
@@ -934,10 +973,22 @@ def archive_status():
         for code in order
     ]
 
+    cur.execute("SELECT display_name, instrument, n FROM instruments ORDER BY display_name, n DESC")
+    instrument_rows = _rows_as_dicts(cur)
+    instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
+    for r in instrument_rows:
+        instruments_by_archive[r["display_name"]].append({"instrument": r["instrument"], "n": r["n"]})
+    instruments = [
+        {"display_name": name, "instruments": insts}
+        for name, insts in instruments_by_archive.items()
+    ]
+
     return render_template_string(
         ARCHIVE_STATUS_TEMPLATE,
         archives=archives,
         category_labels=[label for _, label in ARCHIVE_STATUS_CATEGORIES],
+        instruments=instruments,
+        not_yet_tracked=NOT_YET_TRACKED,
         active_tab="archive_status",
     )
 
@@ -964,14 +1015,13 @@ INFO_TEMPLATE = """
   <h2>What's likely missing</h2>
   <p>This is a "pointer" database, not a spectra archive — it tracks whether an archive has a spectrum for a star and links to it, not the spectrum data (flux/wavelength arrays) itself. A few concrete, known gaps beyond that:</p>
   <ul>
-    <li><b>Archives not yet implemented at all</b>: WEAVE and 4MOST (both not yet public as surveys).</li>
-    <li><b>Partial coverage within an implemented archive</b>: MAST only covers HST (JWST hits a server-side timeout on the same query shape, not yet worked around). NOIRLab only covers the SOAR Goodman Spectrograph (several other NOIRLab-hosted spectrographs — CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI — share the same API but aren't wired up). KOA only covers HIRES (DEIMOS/ESI/LRIS/NIRES aren't yet added). CARMENES only covers the public DR1 GTO portal, not the co-added template library or broader CAHA archive. LBT only covers PEPSI (MODS and LUCI, also spectroscopy-capable, aren't yet added).</li>
+    <li><b>Archives and instruments not yet tracked</b>: see the Archive Status tab's Known gaps table (whole archives like WEAVE/4MOST, and specific spectrographs at already-implemented archives like MAST/NOIRLab/KOA/LBT).</li>
     <li><b>Name resolution gaps</b>: not every archive-reported target name resolves to a tracked star via SIMBAD, and it varies a lot by archive — some archives (e.g. NOIRLab) report a much higher fraction of unresolvable names than others, often because the reported name is a survey-internal field ID or calibration marker rather than an actual star name. These records aren't dropped: they're persisted with match_status <b>skipped</b> so they can be manually or crowd-sourced attached to a real Gaia source later. See the Skipped records section below for live, per-archive counts.</li>
     <li><b>Gaia XP continuous spectra</b>: flagged as available per-star (see the "Gaia XP continuous" field on a star's page) but not ingested as data — same lean-pointer tradeoff as everything else here.</li>
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
   </ul>
 
-  <p class="note">See the Archive Status tab for when each archive was last synced and a per-archive match breakdown, and the Stats tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
+  <p class="note">See the Archive Status tab for when each archive was last synced, a per-archive match breakdown, and the tracked-instruments/known-gaps tables, and the Stats tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
 
   <h2>Needs-review queue</h2>
   <p class="note">Ambiguous positional matches — 2+ tracked stars fell within the 1.0" radius of the archive's reported position, so no single star was assigned. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>

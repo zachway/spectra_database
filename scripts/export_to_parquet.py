@@ -62,6 +62,20 @@ LEFT JOIN counts c ON c.archive_code = a.archive_code
 ORDER BY a.display_name, c.category
 """
 
+# Per-archive, per-instrument holdings counts -- backs the "Tracked
+# instruments" table on the Archive Status page. Same GROUP-BY-over-the-
+# full-holdings-table reasoning as everything else precomputed here. One
+# archive can span several instruments (e.g. Gemini alone has 18), so this
+# is its own table rather than folded into ARCHIVE_STATUS_QUERY above.
+INSTRUMENTS_QUERY = """
+SELECT a.display_name, h.instrument, count(*) AS n
+FROM pg.spectroscopy_holdings h
+JOIN pg.archives a ON a.archive_code = h.archive_code
+WHERE h.instrument IS NOT NULL
+GROUP BY a.display_name, h.instrument
+ORDER BY a.display_name, n DESC
+"""
+
 LEADERBOARD_TOP_N = 10
 
 # Fully precomputed Leaderboard chart data — not just the raw per-(star,
@@ -290,6 +304,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
     archive_status_path = os.path.join(out_dir, "archive_status.parquet")
     _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
     logger.info("exported archive_status -> %s", archive_status_path)
+
+    instruments_path = os.path.join(out_dir, "instruments.parquet")
+    _atomic_copy(con, INSTRUMENTS_QUERY, instruments_path)
+    logger.info("exported instruments -> %s", instruments_path)
 
     export_stats_summary(con, out_dir)
 
