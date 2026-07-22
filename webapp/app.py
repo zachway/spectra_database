@@ -571,7 +571,7 @@ TIMEPLOTS_TEMPLATE = """
       const cumulativeSourceIds = {{ cumulative_traces | tojson }}.map(t => t.source_id);
       const cumulativeTraces = {{ cumulative_traces | tojson }}.map(t => ({
         x: periodLabels, y: t.counts, name: t.label,
-        mode: 'lines', line: { shape: 'spline' }, type: 'scatter',
+        mode: 'lines+markers', line: { shape: 'spline' }, marker: { size: 4 }, type: 'scatter',
         connectgaps: false,
         hovertemplate: '%{fullData.name}<extra></extra>',
       }));
@@ -598,7 +598,7 @@ TIMEPLOTS_TEMPLATE = """
       const periodSourceIds = {{ period_traces | tojson }}.map(t => t.source_id);
       const periodTracesData = {{ period_traces | tojson }}.map(t => ({
         x: periodLabels, y: t.counts, name: t.label,
-        mode: 'lines', line: { shape: 'spline' }, type: 'scatter',
+        mode: 'lines+markers', line: { shape: 'spline' }, marker: { size: 4 }, type: 'scatter',
         connectgaps: false,
         hovertemplate: '%{fullData.name}<extra></extra>',
       }));
@@ -961,16 +961,16 @@ INFO_TEMPLATE = """
   <ol>
     <li><b>direct_gaia_column</b> — the archive already reports a Gaia DR3 source_id for the record (e.g. DESI, LAMOST, GALAH, SDSS-V). This is just a lookup against the tracked-star list, not a positional or name match, so it's the most reliable method.</li>
     <li><b>name_resolved</b> — no Gaia column, but the archive's reported target name matches one of a tracked star's cached SIMBAD aliases. Tried <i>before</i> position deliberately: Gaia's single-star astrometric solution can be biased for close visual binaries, which can break a positional match even with otherwise-correct proper motion — an identifier match sidesteps that failure mode entirely.</li>
-    <li><b>positional_easy_match</b> — no Gaia column and no name match. The record's reported RA/Dec is checked against tracked stars only (not the full Gaia catalog), each candidate's proper motion propagated to the observation's epoch, within a fixed 1.0 arcsecond radius. Exactly one candidate within radius → matched. More than one → <b>needs_review</b> (ambiguous, gaia_source_id left unassigned). Zero → silently skipped.</li>
+    <li><b>positional_easy_match</b> — no Gaia column and no name match. The record's reported RA/Dec is checked against tracked stars only (not the full Gaia catalog), each candidate's proper motion propagated to the observation's epoch, within a fixed 1.0 arcsecond radius. Exactly one candidate within radius → matched. More than one → <b>needs_review</b> (ambiguous, gaia_source_id left unassigned). Zero → recorded as <b>skipped</b> (see below) rather than dropped.</li>
   </ol>
-  <p class="note">The 1.0" match radius is the same for every archive and instrument. Some instruments have a real, documented systematic offset between their reported pointing and the true catalog position (e.g. finder-camera-derived coordinates) — if that offset ever exceeds 1.0", the record is silently skipped rather than mismatched (the tight radius protects against false positives, at the cost of some real holdings never surfacing).</p>
+  <p class="note">The 1.0" match radius is the same for every archive and instrument. Some instruments have a real, documented systematic offset between their reported pointing and the true catalog position (e.g. finder-camera-derived coordinates) — if that offset ever exceeds 1.0", the record ends up in the skipped queue rather than getting mismatched (the tight radius protects against false positives, at the cost of some real holdings not surfacing automatically).</p>
 
   <h2>What's likely missing</h2>
   <p>This is a "pointer" database, not a spectra archive — it tracks whether an archive has a spectrum for a star and links to it, not the spectrum data (flux/wavelength arrays) itself. A few concrete, known gaps beyond that:</p>
   <ul>
     <li><b>Archives not yet implemented at all</b>: WEAVE and 4MOST (both not yet public as surveys).</li>
-    <li><b>Partial coverage within an implemented archive</b>: MAST only covers HST (JWST hits a server-side timeout on the same query shape, not yet worked around). NOIRLab only covers the SOAR Goodman Spectrograph (several other NOIRLab-hosted spectrographs — CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI — share the same API but aren't wired up). KOA only covers HIRES (DEIMOS/ESI/LRIS/NIRES aren't yet added). CARMENES only covers the public DR1 GTO portal, not the co-added template library or broader CAHA archive.</li>
-    <li><b>Name resolution gaps</b>: a small fraction of archive-reported names don't resolve via SIMBAD at all (e.g. 12 of CARMENES DR1's 362 targets) — those records are dropped rather than tracked, since there's no fallback identifier for them.</li>
+    <li><b>Partial coverage within an implemented archive</b>: MAST only covers HST (JWST hits a server-side timeout on the same query shape, not yet worked around). NOIRLab only covers the SOAR Goodman Spectrograph (several other NOIRLab-hosted spectrographs — CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI — share the same API but aren't wired up). KOA only covers HIRES (DEIMOS/ESI/LRIS/NIRES aren't yet added). CARMENES only covers the public DR1 GTO portal, not the co-added template library or broader CAHA archive. LBT only covers PEPSI (MODS and LUCI, also spectroscopy-capable, aren't yet added).</li>
+    <li><b>Name resolution gaps</b>: not every archive-reported target name resolves to a tracked star via SIMBAD, and it varies a lot by archive — some archives (e.g. NOIRLab) report a much higher fraction of unresolvable names than others, often because the reported name is a survey-internal field ID or calibration marker rather than an actual star name. These records aren't dropped: they're persisted with match_status <b>skipped</b> so they can be manually or crowd-sourced attached to a real Gaia source later. See the Skipped records section below for live, per-archive counts.</li>
     <li><b>Gaia XP continuous spectra</b>: flagged as available per-star (see the "Gaia XP continuous" field on a star's page) but not ingested as data — same lean-pointer tradeoff as everything else here.</li>
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
   </ul>
