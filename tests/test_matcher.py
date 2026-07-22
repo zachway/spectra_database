@@ -55,11 +55,17 @@ def test_direct_gaia_column_skips_untracked_star(conn):
     counts = matcher.match_records(conn, "unit_test", [rec])
     assert counts["skipped"] == 1
 
+    # Persisted (not discarded) — gaia_source_id NULL (FK: we don't track
+    # that id), raw report kept for later review/crowd-sourcing.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM spectroscopy_holdings WHERE archive_code='unit_test' AND archive_obs_id='direct-2'"
+            "SELECT gaia_source_id, match_status, match_method FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id='direct-2'"
         )
-        assert cur.fetchone() is None
+        gaia_id, status, method = cur.fetchone()
+    assert gaia_id is None
+    assert status == "skipped"
+    assert method == "direct_gaia_column"
 
 
 def test_positional_single_match(conn):
@@ -120,11 +126,17 @@ def test_positional_no_candidate_skipped(conn):
     counts = matcher.match_records(conn, "unit_test", [rec])
     assert counts["skipped"] >= 1
 
+    # Persisted with the raw reported position, not discarded.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM spectroscopy_holdings WHERE archive_code='unit_test' AND archive_obs_id='pos-3'"
+            "SELECT gaia_source_id, match_status, raw_ra, raw_dec FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id='pos-3'"
         )
-        assert cur.fetchone() is None
+        gaia_id, status, raw_ra, raw_dec = cur.fetchone()
+    assert gaia_id is None
+    assert status == "skipped"
+    assert raw_ra == 10.0
+    assert raw_dec == 10.0
 
 
 def test_idempotent_rerun(conn):
@@ -267,8 +279,14 @@ def test_bogus_sentinel_dec_does_not_crash(conn):
     counts = matcher.match_records(conn, "unit_test", [good_rec, bogus_rec])
     assert counts["positional_matched"] == 1
 
+    # Persisted as skipped (raw bogus dec kept as-is for review), not
+    # silently dropped — the crash-prevention is about not corrupting the
+    # rest of the epoch group's matching, not about hiding the bad record.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM spectroscopy_holdings WHERE archive_code='unit_test' AND archive_obs_id='sentinel-2'"
+            "SELECT gaia_source_id, match_status FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id='sentinel-2'"
         )
-        assert cur.fetchone() is None
+        gaia_id, status = cur.fetchone()
+    assert gaia_id is None
+    assert status == "skipped"

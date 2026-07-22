@@ -187,6 +187,13 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
         for r in direct:
             cur.execute("SELECT 1 FROM stars WHERE gaia_source_id = %s", (r.gaia_source_id,))
             if cur.fetchone() is None:
+                # Not a match failure on our end — the archive reports a
+                # Gaia source_id that doesn't exist in Gaia DR3 itself (a
+                # stale/incorrect ID on the archive's side), confirmed by
+                # discover_stars already having tried and failed to add it
+                # earlier in this same run. gaia_source_id must be NULL
+                # here (FK), same as needs_review.
+                _upsert_holding(cur, archive_code, r, None, "direct_gaia_column", "skipped", None)
                 counts["skipped"] += 1
                 continue
             _upsert_holding(cur, archive_code, r, r.gaia_source_id, "direct_gaia_column", "matched", None)
@@ -212,11 +219,19 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
     # real sky coordinates (undocumented, distinct from the masked-column
     # case clean_float handles), which crashed SkyCoord construction for
     # the whole epoch group outright rather than just that one record.
-    positional = [
-        r
-        for r in positional
-        if r.ra is not None and r.dec is not None and r.obs_date is not None and -90.0 <= r.dec <= 90.0
-    ]
+    no_position, has_position = [], []
+    for r in positional:
+        if r.ra is not None and r.dec is not None and r.obs_date is not None and -90.0 <= r.dec <= 90.0:
+            has_position.append(r)
+        else:
+            no_position.append(r)
+    positional = has_position
+    if no_position:
+        with conn.cursor() as cur:
+            for r in no_position:
+                _upsert_holding(cur, archive_code, r, None, "positional_easy_match", "skipped", None)
+                counts["skipped"] += 1
+        conn.commit()
     if not positional:
         return counts
 
@@ -232,6 +247,8 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
             radius_deg = (EASY_MATCH_RADIUS_ARCSEC + MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
             candidate_rows = _load_candidate_stars(conn, [r.ra for r in recs], [r.dec for r in recs], radius_deg)
             if not candidate_rows:
+                for r in recs:
+                    _upsert_holding(cur, archive_code, r, None, "positional_easy_match", "skipped", None)
                 counts["skipped"] += len(recs)
                 continue
 
@@ -248,6 +265,7 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
             for i, r in enumerate(recs):
                 cands = candidates.get(i, [])
                 if not cands:
+                    _upsert_holding(cur, archive_code, r, None, "positional_easy_match", "skipped", None)
                     counts["skipped"] += 1
                 elif len(cands) == 1:
                     gaia_id, theta = cands[0]

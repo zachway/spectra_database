@@ -92,7 +92,10 @@ CREATE TABLE spectroscopy_holdings (
                              'lr_matched',            -- full likelihood-ratio match (not built yet)
                              'manual'
                          )),
-    match_status         TEXT NOT NULL CHECK (match_status IN ('matched', 'needs_review', 'rejected')),
+    -- skipped: no candidate at all (unlike needs_review's 2+ candidates) —
+    -- persisted (not just counted and discarded) so the raw report can be
+    -- reviewed later, e.g. for crowd-sourced manual attachment to a star.
+    match_status         TEXT NOT NULL CHECK (match_status IN ('matched', 'needs_review', 'rejected', 'skipped')),
     theta_arcsec          REAL,   -- separation for positional matches; null for direct-column matches
 
     -- Retained for needs_review rows (and as an audit trail for matched ones):
