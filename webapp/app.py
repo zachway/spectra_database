@@ -957,6 +957,32 @@ INFO_TEMPLATE = """
   {% else %}
     <p>None yet.</p>
   {% endif %}
+
+  <h2>Skipped records</h2>
+  <p class="note">No candidate at all — nothing within the match radius, an untracked direct Gaia id, or missing/invalid position data. Persisted with the raw reported name/position specifically so they can be reviewed later (e.g. manually or crowd-sourced attachment to a Gaia source), not discarded.</p>
+  <table>
+    <tr><th>Archive</th><th>Skipped</th></tr>
+    {% for r in skipped_by_archive %}
+    <tr><td><a href="/info?archive={{ r.archive_code }}#skipped-list">{{ r.display_name }}</a></td><td>{{ "{:,}".format(r.n) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3 id="skipped-list">{% if archive_filter %}{{ archive_filter }} — {% endif %}Most recent skipped{% if archive_filter %} <a href="/info">(clear filter)</a>{% endif %}</h3>
+  {% if skipped %}
+    <table>
+      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th></tr>
+      {% for r in skipped %}
+      <tr>
+        <td>{{ r.display_name }}</td>
+        <td>{{ r.raw_target_name or "—" }}</td>
+        <td>{{ "%.4f, %.4f"|format(r.raw_ra, r.raw_dec) if r.raw_ra is not none and r.raw_dec is not none else "—" }}</td>
+        <td>{{ r.obs_date or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>None yet.</p>
+  {% endif %}
 </body>
 </html>
 """
@@ -980,9 +1006,48 @@ def info():
     )
     needs_review = _rows_as_dicts(cur)
 
+    cur.execute(
+        """
+        SELECT h.archive_code, a.display_name, count(*) AS n
+        FROM spectroscopy_holdings h
+        JOIN archives a ON a.archive_code = h.archive_code
+        WHERE h.match_status = 'skipped'
+        GROUP BY h.archive_code, a.display_name
+        ORDER BY n DESC
+        """
+    )
+    skipped_by_archive = _rows_as_dicts(cur)
+
+    archive_filter = request.args.get("archive", "").strip()
+    if archive_filter:
+        cur.execute(
+            """
+            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date
+            FROM spectroscopy_holdings h
+            JOIN archives a ON a.archive_code = h.archive_code
+            WHERE h.match_status = 'skipped' AND h.archive_code = ?
+            ORDER BY h.updated_at DESC
+            LIMIT 20
+            """,
+            [archive_filter],
+        )
+    else:
+        cur.execute(
+            """
+            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date
+            FROM spectroscopy_holdings h
+            JOIN archives a ON a.archive_code = h.archive_code
+            WHERE h.match_status = 'skipped'
+            ORDER BY h.updated_at DESC
+            LIMIT 20
+            """
+        )
+    skipped = _rows_as_dicts(cur)
+
     return render_template_string(
         INFO_TEMPLATE, active_tab="info",
         needs_review=needs_review, needs_review_total=needs_review_total,
+        skipped=skipped, skipped_by_archive=skipped_by_archive, archive_filter=archive_filter,
     )
 
 

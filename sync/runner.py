@@ -19,9 +19,9 @@ def run_sync(conn: psycopg.Connection, archive_code: str, fetch_fn: FetchFn) -> 
     # record for a not-yet-tracked star gets silently counted as "skipped"
     # by matcher.match_records (it only matches against stars already in the
     # table). See ingest.add_star.discover_stars.
-    stars_added = discover_stars(conn, archive_code, records)
+    discovery = discover_stars(conn, archive_code, records)
 
     counts = matcher.match_records(conn, archive_code, records)
-    counts["stars_added"] = stars_added
+    counts.update(discovery)
     state.record_run(conn, archive_code, new_cursor, "success", str(counts), len(records))
     return counts

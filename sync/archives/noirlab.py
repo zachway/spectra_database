@@ -27,6 +27,18 @@ instrument value.
 
 No hard row cap found, but slower than most: 20,000 rows took 28.7s.
 Paginated at 10,000/page here.
+
+OBJECT (the raw FITS header target name) is fetched and passed through as
+raw_target_name, but confirmed live it's frequently NOT a resolvable star
+name at all — e.g. "SMC #19 Spec HgAr" (a survey-internal field id, and
+"HgAr" flags this specific exposure as an arc-lamp wavelength calibration,
+not a science target) or "SMC #21 acq" (a telescope acquisition/pointing
+frame). obs_type='object' is supposed to exclude non-science frames but
+evidently doesn't catch all of these. Still worth passing through: SIMBAD
+resolution already fails gracefully and falls through to positional
+matching for anything it can't resolve, so this can only add matches, not
+break anything — it's just not the fix for NOIRLab's positional-match rate
+that a clean target-name field would have been.
 """
 
 import requests
@@ -47,7 +59,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     resp = requests.post(
         f"{FIND_URL}?limit={PAGE_SIZE}&format=json&sort=dateobs_center",
         json={
-            "outfields": ["md5sum", "ra_center", "dec_center", "dateobs_center", "proposal", "url"],
+            "outfields": ["md5sum", "OBJECT", "ra_center", "dec_center", "dateobs_center", "proposal", "url"],
             "search": [
                 ["instrument", INSTRUMENT],
                 ["proc_type", "raw"],
@@ -74,6 +86,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 program_id=row.get("proposal"),
                 ra=clean_float(row["ra_center"]),
                 dec=clean_float(row["dec_center"]),
+                raw_target_name=row.get("OBJECT") or None,
             )
         )
 

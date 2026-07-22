@@ -343,7 +343,7 @@ def resolve_stellar_gaia_ids_batch(names: list[str]) -> dict[str, int]:
     return resolved
 
 
-def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> int:
+def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> dict:
     """Track any new stars a batch of archive records reveals, before matching.
 
     Same discovery rule for every archive: a record with its own Gaia
@@ -356,6 +356,14 @@ def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[Ra
     Shared between sync.runner (incremental production syncs) and
     scripts.seed_small_test_data (one-off bulk seeding) so the two can't
     silently diverge in what counts as a new star.
+
+    Returns names_attempted/names_resolved alongside stars_added — added
+    specifically because this was previously invisible: More Info's "a
+    small fraction of names don't resolve" claim was written from a single
+    archive's own bespoke, unrepresentative counter (carmenes.py's cursor),
+    not real data from this shared function every archive actually goes
+    through. Now every archive's real resolution rate gets recorded in
+    archive_sync_state.last_run_notes each run.
     """
     known_aliases: dict[int, list[str]] = {}
 
@@ -366,6 +374,7 @@ def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[Ra
 
     unnamed = [r for r in records if r.gaia_source_id is None]
     names = [r.raw_target_name for r in unnamed if r.raw_target_name]
+    unique_names = len({n for n in names if n})
     name_to_gaia: dict[str, int] = {}
     if names:
         try:
@@ -380,7 +389,8 @@ def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[Ra
         known_aliases.setdefault(gaia_id, []).append(name)
 
     all_ids = [r.gaia_source_id for r in direct] + list(name_to_gaia.values())
-    return add_stars_batch(conn, all_ids, known_aliases=known_aliases)
+    stars_added = add_stars_batch(conn, all_ids, known_aliases=known_aliases)
+    return {"stars_added": stars_added, "names_attempted": unique_names, "names_resolved": len(name_to_gaia)}
 
 
 def main() -> None:

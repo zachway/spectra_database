@@ -122,11 +122,11 @@ def _fetch_records(archive_code: str, module, limit: int) -> list:
 def seed_archive(conn: psycopg.Connection, archive_code: str, module, limit: int) -> dict:
     records = _fetch_records(archive_code, module, limit)
 
-    stars_added = discover_stars(conn, archive_code, records)
+    discovery = discover_stars(conn, archive_code, records)
 
     counts = matcher.match_records(conn, archive_code, records)
-    logger.info("%s: fetched %d rows, %d new stars -> %s", archive_code, len(records), stars_added, counts)
-    return {"rows_fetched": len(records), "stars_added": stars_added, **counts}
+    logger.info("%s: fetched %d rows -> %s | %s", archive_code, len(records), discovery, counts)
+    return {"rows_fetched": len(records), **discovery, **counts}
 
 
 def main() -> None:
