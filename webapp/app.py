@@ -870,6 +870,7 @@ ARCHIVE_STATUS_CATEGORIES = [
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
     ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "hits a server-side timeout on the same query shape used for HST; not yet worked around"),
+    ("MAST", "IUE, FUSE (older collections)", "not yet checked at all -- unknown whether the same ivoa.obscore query shape even works for these"),
     ("NOIRLab Astro Data Archive", "CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI", "share the same API as the currently-tracked SOAR Goodman Spectrograph, just not wired up yet"),
     ("Keck Observatory Archive", "DEIMOS, ESI, LRIS, NIRES", "only HIRES is tracked currently"),
     ("LBT — PEPSI", "MODS, LUCI", "also spectroscopy-capable, not yet added"),
@@ -877,8 +878,12 @@ NOT_YET_TRACKED = [
     ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
     ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
     ("—", "OIRSA (CfA)", "a ~2011 stateful session-driven search wizard with no documented direct-query API; investigated, meaningfully more reverse-engineering than any archive implemented so far"),
+    ("—", "ARIES DOT (3.6m Devasthal)", "no public archive at all -- proposal listing is empty and the only data endpoint 401s (PI-login only); investigated, not yet worth the build"),
     ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
+    ("—", "HARPS-N / TNG (IA2 archive, archives.ia2.inaf.it/tng)", "not yet investigated -- a separate public archive from ESO's HARPS (La Silla), likely relevant given existing RV-spectrograph coverage (CARMENES)"),
+    ("—", "SOPHIE / ELODIE (OHP, atlas.obs-hp.fr)", "not yet investigated -- public archive with a documented advanced query interface and direct per-spectrum URLs; French RV-survey counterpart to CARMENES/HARPS-N"),
+    ("—", "SALT HRS (SAAO)", "not yet investigated -- public archive exists (1yr proprietary period) but no bulk/TAP access method confirmed yet"),
 ]
 
 ARCHIVE_STATUS_TEMPLATE = """
