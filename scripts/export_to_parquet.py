@@ -30,10 +30,10 @@ logger = logging.getLogger(__name__)
 
 TABLES = ["stars", "archives", "spectroscopy_holdings", "archive_sync_state"]
 
-LEADERBOARD_TOP_N = 5
+LEADERBOARD_TOP_N = 10
 
 # Fully precomputed Leaderboard chart data — not just the raw per-(star,
-# period) counts, but the actual top-5-per-period selection webapp.app plots.
+# period) counts, but the actual top-N-per-period selection webapp.app plots.
 #
 # First cut of this only moved the raw GROUP BY here and left webapp.app to
 # pick the top 5 per period in Python — that GROUP BY alone still produces
@@ -51,7 +51,7 @@ LEADERBOARD_TOP_N = 5
 # star x period grid (needed so a star's cumulative total carries forward
 # through periods where it had no new observations, and can still rank) is
 # ranked with ROW_NUMBER() partitioned per period, and only rows where the
-# star made top-5 by *either* metric at *any* period survive. That collapses
+# star made top-N by *either* metric at *any* period survive. That collapses
 # ~2M-star x ~70-period grid down to a few tens of thousands of rows --
 # confirmed live (17,612 rows from a real run, ~49s) -- which webapp.app can
 # now just read and reshape into chart traces with no computation of its own.
