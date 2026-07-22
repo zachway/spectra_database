@@ -13,9 +13,18 @@ jsonsummary silently caps its response at 2000 rows -- confirmed live: a
 days, never reaching the reduced files known to exist later in that same
 window (see gemini_igrins.py). A too-wide window doesn't error, it just
 quietly drops data past row 2000 -- worse than an empty page, since it
-looks like a normal partial result. Guarded here by raising if a response
-comes back at exactly the cap, rather than risk it happening again
-silently for either instrument.
+looks like a normal partial result.
+
+A single fixed WINDOW_DAYS isn't safe against this -- confirmed live twice:
+even after shrinking IGRINS from 180 to 7 days, a real dense stretch
+(20180422-20180429, right after a ~190-exposure two-day burst) still hit
+the cap. Observing density varies a lot day to day and instrument to
+instrument, so instead of guessing yet another fixed number, a capped
+response here halves the window and retries the *same* window_start,
+down to a 1-day floor, before giving up and raising. Each new window_start
+resets back to the caller's preferred window_days -- if density was just a
+temporary burst, this avoids staying artificially narrow (and slow) for
+the rest of the scan.
 
 Also: GOA serves these files bzip2-compressed (filenames end in .fits.bz2,
 not .fits) -- confirmed live. Callers' is_reduced() should check for a
@@ -68,26 +77,31 @@ def fetch_reduced(
         return [], cursor
 
     while True:
-        window_end = min(window_start + timedelta(days=window_days), today)
-        url = "/".join([
-            BASE_URL, "jsonsummary", "canonical",
-            instrument, "OBJECT", "science",
-            f"{_date_str(window_start)}-{_date_str(window_end)}",
-        ])
-        resp = requests.get(url, cookies=cookies, timeout=120)
-        if resp.status_code != 200 or not resp.headers.get("content-type", "").startswith("application/json"):
-            raise RuntimeError(
-                f"GOA request failed (status {resp.status_code}) -- {COOKIE_ENV_VAR} is likely "
-                "missing or stale. Re-login at https://archive.gemini.edu and refresh the env var."
-            )
-        records_json = resp.json()
-        if len(records_json) >= RESPONSE_ROW_CAP:
-            raise RuntimeError(
-                f"GOA returned {len(records_json)} rows for {instrument} "
-                f"{_date_str(window_start)}-{_date_str(window_end)} -- likely hit the "
-                f"~{RESPONSE_ROW_CAP}-row response cap, meaning some data in this window may be "
-                "silently missing. Narrow WINDOW_DAYS for this archive and retry."
-            )
+        width = window_days
+        while True:
+            window_end = min(window_start + timedelta(days=width), today)
+            url = "/".join([
+                BASE_URL, "jsonsummary", "canonical",
+                instrument, "OBJECT", "science",
+                f"{_date_str(window_start)}-{_date_str(window_end)}",
+            ])
+            resp = requests.get(url, cookies=cookies, timeout=120)
+            if resp.status_code != 200 or not resp.headers.get("content-type", "").startswith("application/json"):
+                raise RuntimeError(
+                    f"GOA request failed (status {resp.status_code}) -- {COOKIE_ENV_VAR} is likely "
+                    "missing or stale. Re-login at https://archive.gemini.edu and refresh the env var."
+                )
+            records_json = resp.json()
+            if len(records_json) < RESPONSE_ROW_CAP:
+                break
+            if width <= 1:
+                raise RuntimeError(
+                    f"GOA returned {len(records_json)} rows for {instrument} "
+                    f"{_date_str(window_start)}-{_date_str(window_end)} even at the minimum 1-day "
+                    f"window -- genuinely hit the ~{RESPONSE_ROW_CAP}-row response cap on a single "
+                    "day's data. This needs a different pagination approach for this instrument."
+                )
+            width = max(1, width // 2)
 
         rows = [r for r in records_json if is_reduced(r.get("filename", ""))]
         if rows or window_end >= today:
