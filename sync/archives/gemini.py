@@ -17,6 +17,18 @@ filtered out. Real Gemini spectrum data starts at MJD 51946.48 (2001-01-24,
 live-confirmed as MIN(t_min) WHERE t_min > 0) — used as the default cursor
 start to avoid iterating empty weeks back to MJD 0.
 
+sync.main's generic driver stops calling fetch() the first time it gets 0
+records back, on the assumption that an empty page means the archive is
+exhausted -- true for every other archive here (they all filter on
+field > watermark, open-ended to "now"), but false for a fixed window:
+an empty week says nothing about whether week 500 has data. Confirmed
+live this bites almost immediately -- the very first real week (starting
+51946.0) has 9 records, the second (51953.0) has 0, so the generic driver
+stopped after 2 pages, having covered 2 weeks of a ~25-year archive.
+Fixed by looping internally past empty windows here, so a single fetch()
+call only returns empty when window_start has genuinely caught up to
+the present -- keeping the generic driver's "stop on empty" logic valid.
+
 Deep link: same DataLink resolver as CFHT, confirmed live on a real Gemini
 record (GNIRS spectrum, direct FITS file resolved and downloadable).
 
@@ -48,11 +60,16 @@ DATALINK_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink?ID
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     window_start = cursor.get("window_start", FIRST_REAL_T_MIN)
-    window_end = window_start + WINDOW_DAYS
-
+    now_t_min = Time.now().mjd
     tap = make_tap_service(TAP_URL)
-    query = QUERY.format(window_start=window_start, window_end=window_end)
-    table = tap.search(query, maxrec=20000).to_table()
+
+    while True:
+        window_end = window_start + WINDOW_DAYS
+        query = QUERY.format(window_start=window_start, window_end=window_end)
+        table = tap.search(query, maxrec=20000).to_table()
+        if len(table) > 0 or window_end >= now_t_min:
+            break
+        window_start = window_end
 
     records = []
     for row in table:
