@@ -116,6 +116,7 @@ CREATE INDEX idx_holdings_needs_review ON spectroscopy_holdings (archive_code) W
 
 INSERT INTO archives (archive_code, display_name, access_mechanism, has_native_gaia_column, native_gaia_dr, notes) VALUES
     ('gemini',              'Gemini Observatory Archive',      'tap',       FALSE, NULL, 'Implemented via CADC (ivoa.ObsCore, obs_collection GEMINI/GEMINICADC), not the native REST API. ORDER BY t_min has a severe cliff (72s for 1000 rows) — paginated by 7-day date window instead.'),
+    ('gemini_ghost',        'Gemini Observatory Archive — GHOST', 'rest_json', FALSE, NULL, 'GHOST-specific: CADC is missing GHOST''s reduced per-arm spectra (confirmed live), so this goes straight to GOA (archive.gemini.edu) instead. Needs an authenticated session cookie — see sync/archives/gemini_ghost.py.'),
     ('mast',                'MAST',                             'tap',       FALSE, NULL, 'Implemented against HST via mast.stsci.edu/vo-tap (ivoa.obscore) — a different, working TAP service, not the classic API. No cliff found. JWST hits a genuine 504 on the same query shape — not yet covered.'),
     ('noirlab',             'NOIRLab Astro Data Archive',       'rest_json', FALSE, NULL, 'Implemented for the SOAR Goodman Spectrograph via astroarchive.noirlab.edu (not the datalab.noirlab.edu /tap endpoint, which 404s). Does NOT host DESI (that assumption was wrong — see desi).'),
     ('eso',                 'ESO Science Archive',              'tap',       FALSE, NULL, 'No upload-JOIN support. Implemented, positional match, paginated by t_min watermark.'),

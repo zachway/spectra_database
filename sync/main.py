@@ -13,6 +13,12 @@ their own cursor. One archive failing doesn't stop the others — the error is
 logged, the connection is rolled back so the failure can't poison the next
 archive's transaction, and the driver moves on. Not-yet-implemented archives
 (weave, four_most) aren't registered here at all — they have no public data.
+
+gemini_ghost needs a GOA_SESSION_COOKIE env var (see its module docstring)
+-- morgan is headless, so this means logging into archive.gemini.edu in a
+browser elsewhere and copying the session cookie value over by hand before
+including gemini_ghost in --only. Without it, that one archive fails
+(handled the same as any other failure) rather than blocking the rest.
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ from sync.archives import (
     eso,
     galah,
     gemini,
+    gemini_ghost,
     koa,
     lamost,
     lbt,
@@ -52,6 +59,7 @@ ARCHIVES = {
     "eso": eso.fetch,
     "cfht_cadc": cfht_cadc.fetch,
     "gemini": gemini.fetch,
+    "gemini_ghost": gemini_ghost.fetch,
     "koa": koa.fetch,
     "lamost": lamost.fetch,
     "lbt": lbt.fetch,

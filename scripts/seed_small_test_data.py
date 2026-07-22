@@ -79,6 +79,9 @@ ALL_ARCHIVES = {
     **FULL_PULL,
     **BULK_FILE,
 }
+# gemini_ghost deliberately excluded -- needs a real, manually-obtained
+# GOA_SESSION_COOKIE (see its module docstring), which a scripted local
+# test seed can't provide.
 
 
 def _fetch_records(archive_code: str, module, limit: int) -> list:
