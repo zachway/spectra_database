@@ -846,12 +846,10 @@ ARCHIVE_STATUS_CATEGORIES = [
 # precomputed. Kept in sync with each archive module's docstring; update
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
-    ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "server-side timeout on the HST query shape; not yet worked around"),
     ("CARMENES", "co-added template library (TAC)", "carmenes_caha.py covers per-observation raw spectra, both channels; the co-added templates are a separate product"),
     ("—", "NAOJ (Subaru)", "no bulk query, only a fragile per-object lookup; not yet worth the build"),
     ("—", "OIRSA (CfA)", "stateful session-driven search wizard, no documented API; more reverse-engineering than justified so far"),
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive; the one data endpoint is PI-login only"),
-    ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
     ("—", "HARPS-N / TNG (IA2 archive)", "not yet investigated"),
@@ -1015,7 +1013,7 @@ INFO_TEMPLATE = """
   <h2>What's likely missing</h2>
   <p>This is a "pointer" database, not a spectra archive — it tracks whether an archive has a spectrum for a star and links to it, not the spectrum data (flux/wavelength arrays) itself. A few concrete, known gaps beyond that:</p>
   <ul>
-    <li><b>Archives and instruments not yet tracked</b>: see the Archive Status tab's Known gaps table (whole archives not yet public or investigated, like WEAVE/4MOST/JUST, and specific instruments at already-implemented archives like MAST's JWST instruments, CARMENES's co-added template library, and LAMOST's MRS).</li>
+    <li><b>Archives and instruments not yet tracked</b>: see the Archive Status tab's Known gaps table (whole archives not yet public or investigated, like WEAVE/4MOST/JUST, and specific instruments at already-implemented archives like CARMENES's co-added template library).</li>
     <li><b>Name resolution gaps</b>: not every archive-reported target name resolves to a tracked star via SIMBAD, and it varies a lot by archive — some archives (e.g. NOIRLab) report a much higher fraction of unresolvable names than others, often because the reported name is a survey-internal field ID or calibration marker rather than an actual star name. These records aren't dropped: they're persisted with match_status <b>skipped</b> so they can be manually or crowd-sourced attached to a real Gaia source later. See the Skipped records section below for live, per-archive counts.</li>
     <li><b>Gaia XP continuous spectra</b>: flagged as available per-star (see the "Gaia XP continuous" field on a star's page) but not ingested as data — same lean-pointer tradeoff as everything else here.</li>
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
