@@ -33,7 +33,9 @@ import psycopg
 
 from sync.archives import (
     carmenes,
+    carmenes_caha,
     cfht_cadc,
+    dao,
     desi,
     eso,
     galah,
@@ -61,6 +63,7 @@ ARCHIVES = {
     "galah": galah.fetch,
     "eso": eso.fetch,
     "cfht_cadc": cfht_cadc.fetch,
+    "dao": dao.fetch,
     "gemini": gemini.fetch,
     "gemini_ghost": gemini_ghost.fetch,
     "gemini_igrins": gemini_igrins.fetch,
@@ -74,6 +77,7 @@ ARCHIVES = {
     "sdss_v_optical": sdss_v_optical.fetch,
     "sdss_legacy_optical": sdss_legacy_optical.fetch,
     "carmenes": carmenes.fetch,
+    "carmenes_caha": carmenes_caha.fetch,
     "desi": desi.fetch,
 }
 
