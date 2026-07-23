@@ -22,6 +22,8 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import tempfile
 
 import duckdb
 
@@ -303,33 +305,47 @@ def _atomic_copy(con: duckdb.DuckDBPyConnection, select_sql: str, path: str) -> 
 
 def export_tables(database_url: str, out_dir: str) -> None:
     con = duckdb.connect()
-    con.execute("INSTALL postgres")
-    con.execute("LOAD postgres")
-    con.execute(f"ATTACH '{database_url}' AS pg (TYPE postgres, READ_ONLY)")
-    for table in TABLES:
-        path = os.path.join(out_dir, f"{table}.parquet")
-        _atomic_copy(con, f"SELECT * FROM pg.{table}", path)
-        logger.info("exported %s -> %s", table, path)
+    # An in-memory connection has no temp_directory by default, so DuckDB
+    # can't spill oversized intermediate results (e.g. the leaderboard
+    # query's star x period grid) to disk -- it just errors out once
+    # memory_limit is hit instead. Confirmed live: LAMOST's addition pushed
+    # the leaderboard grid past the box's 24.9 GiB default memory_limit for
+    # the first time. Pointing temp_directory somewhere writable lets
+    # DuckDB spill instead of OOMing.
+    # dir=out_dir (not system /tmp, which can be small/quota-limited on a
+    # shared login node) since out_dir is already known to have room for
+    # the multi-GB parquet exports themselves.
+    spill_dir = tempfile.mkdtemp(prefix=".duckdb_export_spill_", dir=out_dir)
+    try:
+        con.execute(f"SET temp_directory = '{spill_dir}'")
+        con.execute("INSTALL postgres")
+        con.execute("LOAD postgres")
+        con.execute(f"ATTACH '{database_url}' AS pg (TYPE postgres, READ_ONLY)")
+        for table in TABLES:
+            path = os.path.join(out_dir, f"{table}.parquet")
+            _atomic_copy(con, f"SELECT * FROM pg.{table}", path)
+            logger.info("exported %s -> %s", table, path)
 
-    leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
-    _atomic_copy(con, LEADERBOARD_QUERY, leaderboard_path)
-    logger.info("exported leaderboard -> %s", leaderboard_path)
+        leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
+        _atomic_copy(con, LEADERBOARD_QUERY, leaderboard_path)
+        logger.info("exported leaderboard -> %s", leaderboard_path)
 
-    cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
-    _atomic_copy(con, CMD_STARS_QUERY, cmd_stars_path)
-    logger.info("exported cmd_stars -> %s", cmd_stars_path)
+        cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
+        _atomic_copy(con, CMD_STARS_QUERY, cmd_stars_path)
+        logger.info("exported cmd_stars -> %s", cmd_stars_path)
 
-    archive_status_path = os.path.join(out_dir, "archive_status.parquet")
-    _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
-    logger.info("exported archive_status -> %s", archive_status_path)
+        archive_status_path = os.path.join(out_dir, "archive_status.parquet")
+        _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
+        logger.info("exported archive_status -> %s", archive_status_path)
 
-    instruments_path = os.path.join(out_dir, "instruments.parquet")
-    _atomic_copy(con, INSTRUMENTS_QUERY, instruments_path)
-    logger.info("exported instruments -> %s", instruments_path)
+        instruments_path = os.path.join(out_dir, "instruments.parquet")
+        _atomic_copy(con, INSTRUMENTS_QUERY, instruments_path)
+        logger.info("exported instruments -> %s", instruments_path)
 
-    export_stats_summary(con, out_dir)
-
-    con.close()
+        export_stats_summary(con, out_dir)
+    finally:
+        con.close()
+        shutil.rmtree(spill_dir, ignore_errors=True)
 
 
 def main() -> None:
