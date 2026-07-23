@@ -112,70 +112,121 @@ LEADERBOARD_TOP_N = 10
 # to keep the top 5 -- confirmed live as what was actually driving the OOM
 # (1.1GB+) even after the raw-GROUP-BY-only version of this fix shipped.
 #
-# Ranking is real work better left to a real query engine than a Python
-# loop, so it's done here with window functions instead: a full
-# star x period grid (needed so a star's cumulative total carries forward
-# through periods where it had no new observations, and can still rank) is
-# ranked with ROW_NUMBER() partitioned per period, and only rows where the
-# star made top-N by *either* metric at *any* period survive. That collapses
-# ~2M-star x ~70-period grid down to a few tens of thousands of rows --
-# confirmed live (17,612 rows from a real run, ~49s) -- which webapp.app can
-# now just read and reshape into chart traces with no computation of its own.
-LEADERBOARD_QUERY = f"""
-WITH counts AS (
-    SELECT
-        gaia_source_id,
-        year(obs_date) AS yr,
-        CASE WHEN month(obs_date) <= 6 THEN 1 ELSE 2 END AS half,
-        count(*) AS n
-    FROM pg.spectroscopy_holdings
-    WHERE obs_date IS NOT NULL AND gaia_source_id IS NOT NULL
-    GROUP BY gaia_source_id, yr, half
+# Second cut moved the ranking into one SQL query using window functions
+# over a star x period grid (cross join, needed so a star's cumulative
+# total carries forward through periods where it had no new observations,
+# and can still rank). That worked at ~2M stars / ~70 periods, but LAMOST
+# pushed the real star count with dated observations to 6.1M -- a 6.1M x
+# 74 = ~453M row grid -- which OOM'd DuckDB's 24.9 GiB memory_limit even
+# with disk-spilling enabled (temp_directory set), confirmed live. The
+# grid was always ~60x bigger than it needed to be: only ~7.3M (star,
+# period) pairs actually have any observations at all.
+#
+# Rewritten below to never materialize that grid:
+#   - Within-period top-N doesn't need it at all -- a star with zero new
+#     observations this period can never outrank one with a positive
+#     count, so ranking directly against the real (star, period, n) rows
+#     (no zero-filled ones) gives the same top-N.
+#   - Cumulative top-N does need every active star's running total as of
+#     each period (including periods where it didn't newly observe), but
+#     that's a sweep, not a cross join: walk the ~74 periods in order,
+#     keep one running total per star ever observed (bounded by star
+#     count, not star x period), and snapshot the top-N after each
+#     period's update. Same ranking result as the old grid-based window
+#     function, without ever holding more than one row per star.
+#   - Only once the (small, low tens-of-thousands) set of stars that ever
+#     made top-N by either metric is known does a star x period grid get
+#     built -- cast stars only, ~74x that small set, nowhere near the
+#     full 6.1M-star grid.
+LEADERBOARD_COUNTS_QUERY = """
+SELECT
+    gaia_source_id,
+    year(obs_date) AS yr,
+    CASE WHEN month(obs_date) <= 6 THEN 1 ELSE 2 END AS half,
+    count(*) AS n
+FROM pg.spectroscopy_holdings
+WHERE obs_date IS NOT NULL AND gaia_source_id IS NOT NULL
+GROUP BY gaia_source_id, yr, half
+"""
+
+LEADERBOARD_FINAL_QUERY = f"""
+WITH cast_stars AS (
+    SELECT gaia_source_id FROM leaderboard_top_period
+    UNION
+    SELECT gaia_source_id FROM leaderboard_top_cum
 ),
 periods AS (
-    SELECT DISTINCT yr, half FROM counts
-),
-stars_with_counts AS (
-    SELECT DISTINCT gaia_source_id FROM counts
+    SELECT DISTINCT yr, half FROM leaderboard_counts
 ),
 grid AS (
-    SELECT s.gaia_source_id, p.yr, p.half
-    FROM stars_with_counts s CROSS JOIN periods p
-),
-filled AS (
-    SELECT g.gaia_source_id, g.yr, g.half, COALESCE(c.n, 0) AS n
-    FROM grid g
-    LEFT JOIN counts c USING (gaia_source_id, yr, half)
-),
-cum AS (
-    SELECT gaia_source_id, yr, half, n,
-        SUM(n) OVER (
-            PARTITION BY gaia_source_id ORDER BY yr, half
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS cum_n
-    FROM filled
-),
-ranked AS (
-    SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY yr, half ORDER BY n DESC, gaia_source_id) AS period_rank,
-        ROW_NUMBER() OVER (PARTITION BY yr, half ORDER BY cum_n DESC, gaia_source_id) AS cum_rank
-    FROM cum
-),
-cast_stars AS (
-    SELECT DISTINCT gaia_source_id FROM ranked
-    WHERE period_rank <= {LEADERBOARD_TOP_N} OR cum_rank <= {LEADERBOARD_TOP_N}
+    SELECT cs.gaia_source_id, p.yr, p.half
+    FROM cast_stars cs CROSS JOIN periods p
 )
 SELECT
-    r.gaia_source_id,
-    COALESCE(s.name_aliases[1], s.input_name, CAST(r.gaia_source_id AS VARCHAR)) AS label,
-    r.yr, r.half,
-    CASE WHEN r.period_rank <= {LEADERBOARD_TOP_N} THEN r.n ELSE NULL END AS within_n,
-    CASE WHEN r.cum_rank <= {LEADERBOARD_TOP_N} THEN r.cum_n ELSE NULL END AS cumulative_n
-FROM ranked r
-JOIN cast_stars cs USING (gaia_source_id)
-JOIN pg.stars s ON s.gaia_source_id = r.gaia_source_id
-ORDER BY r.gaia_source_id, r.yr, r.half
+    g.gaia_source_id,
+    COALESCE(s.name_aliases[1], s.input_name, CAST(g.gaia_source_id AS VARCHAR)) AS label,
+    g.yr, g.half,
+    tp.n AS within_n,
+    tc.cum_n AS cumulative_n
+FROM grid g
+LEFT JOIN leaderboard_top_period tp USING (gaia_source_id, yr, half)
+LEFT JOIN leaderboard_top_cum tc USING (gaia_source_id, yr, half)
+JOIN pg.stars s ON s.gaia_source_id = g.gaia_source_id
+ORDER BY g.gaia_source_id, g.yr, g.half
 """
+
+
+def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
+    con.execute(f"CREATE OR REPLACE TEMP TABLE leaderboard_counts AS {LEADERBOARD_COUNTS_QUERY}")
+
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE leaderboard_top_period AS
+        SELECT gaia_source_id, yr, half, n
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY yr, half ORDER BY n DESC, gaia_source_id
+            ) AS period_rank
+            FROM leaderboard_counts
+        )
+        WHERE period_rank <= {LEADERBOARD_TOP_N}
+    """)
+
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE leaderboard_cum_state (
+            gaia_source_id BIGINT PRIMARY KEY, cum_n BIGINT
+        )
+    """)
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE leaderboard_top_cum (
+            gaia_source_id BIGINT, yr INTEGER, half INTEGER, cum_n BIGINT
+        )
+    """)
+    periods = con.execute(
+        "SELECT DISTINCT yr, half FROM leaderboard_counts ORDER BY yr, half"
+    ).fetchall()
+    for yr, half in periods:
+        con.execute(
+            """
+            INSERT INTO leaderboard_cum_state (gaia_source_id, cum_n)
+            SELECT gaia_source_id, n FROM leaderboard_counts
+            WHERE yr = ? AND half = ?
+            ON CONFLICT (gaia_source_id) DO UPDATE
+                SET cum_n = leaderboard_cum_state.cum_n + excluded.cum_n
+            """,
+            [yr, half],
+        )
+        con.execute(
+            f"""
+            INSERT INTO leaderboard_top_cum
+            SELECT gaia_source_id, ?, ?, cum_n
+            FROM leaderboard_cum_state
+            ORDER BY cum_n DESC, gaia_source_id
+            LIMIT {LEADERBOARD_TOP_N}
+            """,
+            [yr, half],
+        )
+
+    _atomic_copy(con, LEADERBOARD_FINAL_QUERY, path)
 
 # Precomputed "most observed" star list for the CMD page — was a random
 # USING SAMPLE over `stars` (cheap: no join needed), changed to the N
@@ -327,7 +378,7 @@ def export_tables(database_url: str, out_dir: str) -> None:
             logger.info("exported %s -> %s", table, path)
 
         leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
-        _atomic_copy(con, LEADERBOARD_QUERY, leaderboard_path)
+        _export_leaderboard(con, leaderboard_path)
         logger.info("exported leaderboard -> %s", leaderboard_path)
 
         cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
