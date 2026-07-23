@@ -5,11 +5,35 @@ instrument (koa_hires, koa_deimos, koa_lris, ...) — found directly from
 KOA's own PyKOA docs.
 
 Originally scoped to koa_hires alone; extended to koa_deimos, koa_esi,
-koa_lris, koa_nires. Confirmed live (TAP_SCHEMA column listing) that
-koa_deimos/koa_esi carry both `mjd` and `mjd_obs` (same shape as koa_hires),
-while koa_lris/koa_nires carry only `mjd_obs` — no `mjd` column at all, per
-this module's own earlier note. INSTRUMENTS below records the right column
-per table instead of assuming a uniform schema.
+koa_lris, koa_nires, and then again to koa_nirspec, koa_kpf, koa_mosfire,
+koa_osiris (this pass — prompted by a live report that 18 Sco/HR 6060
+showed only its ~21 matched HIRES holdings when KOA's own web search
+reports 1,136 science files for that position across four instruments;
+NIRSPEC alone — used there as a near-IR telluric standard under object
+names like "BS6060"/"HD 146233" — accounts for 683 of those). Confirmed
+live (TAP_SCHEMA column listing) that koa_deimos/koa_esi carry both `mjd`
+and `mjd_obs` (same shape as koa_hires), as does koa_nirspec (`mjd` only,
+no `mjd_obs`), while koa_lris/koa_nires/koa_kpf/koa_mosfire/koa_osiris
+carry only `mjd_obs` — no `mjd` column at all, per this module's own
+earlier note. INSTRUMENTS below records the right column per table instead
+of assuming a uniform schema.
+
+Not added, checked live and rejected:
+- koa_kcwi: technically a spectrograph (IFU), but real object names skew
+  overwhelmingly extragalactic/quasar-sightline (e.g. "Q0142_BX195",
+  "SDSS2151+0921") — only ~1.8% of object-frame rows match a star-catalog
+  naming pattern (HD/HR/GJ/BD/HIP/TYC), against ~6-13% for
+  koa_mosfire/koa_osiris (kept in despite also being extragalactic-heavy,
+  since their absolute stellar-named counts are in the thousands). "Cosmic
+  Web Imager" is a fair description of what it's actually pointed at.
+- koa_nirc, koa_nirc2, koa_guider: imaging cameras / acquisition, not
+  spectrographs (NIRC2 has a rarely-used grism mode but is overwhelmingly
+  an AO imager).
+- koa_lws: decommissioned mid-IR spectrometer with no `object` column at
+  all in its TAP table — no target name to match against.
+- koa_reduced_data: a processed-products table spanning every instrument,
+  different shape entirely (not a per-instrument raw-observation table);
+  out of scope for this pass.
 
 The previously-flagged "ORDER BY + TOP returns unsorted results" bug could
 NOT be reproduced live in this session — tested 200 rows, strictly
@@ -72,15 +96,19 @@ PAGE_SIZE = 50000
 
 DOWNLOAD_URL = "https://koa.ipac.caltech.edu/cgi-bin/getKOA/nph-getKOA?filehand={filehand}"
 
-# instrument name -> (TAP table, mjd column). koa_deimos/koa_esi share
-# koa_hires's shape (both mjd and mjd_obs present, mjd used for
-# consistency); koa_lris/koa_nires only carry mjd_obs (confirmed live).
+# instrument name -> (TAP table, mjd column). koa_deimos/koa_esi/koa_nirspec
+# carry an mjd column (koa_nirspec has no mjd_obs at all); koa_lris/koa_nires/
+# koa_kpf/koa_mosfire/koa_osiris only carry mjd_obs (confirmed live).
 INSTRUMENTS = {
     "HIRES": ("koa_hires", "mjd"),
     "DEIMOS": ("koa_deimos", "mjd"),
     "ESI": ("koa_esi", "mjd"),
     "LRIS": ("koa_lris", "mjd_obs"),
     "NIRES": ("koa_nires", "mjd_obs"),
+    "NIRSPEC": ("koa_nirspec", "mjd"),
+    "KPF": ("koa_kpf", "mjd_obs"),
+    "MOSFIRE": ("koa_mosfire", "mjd_obs"),
+    "OSIRIS": ("koa_osiris", "mjd_obs"),
 }
 
 # Pre-existing production cursors from before multi-instrument support were
