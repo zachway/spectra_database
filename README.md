@@ -11,3 +11,7 @@ Deployed on Google Cloud Run (project `spectra-database`, service
 ```
 gcloud run deploy spectra-database --source . --region us-central1 --allow-unauthenticated
 ```
+
+The current version of this webapp is hosted at:
+
+<a href="https://spectra-database-997472993697.us-central1.run.app">https://spectra-database-997472993697.us-central1.run.app</a>
