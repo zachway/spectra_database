@@ -176,6 +176,7 @@ NAV_HTML = """
     <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
     <a href="/status" class="{{ 'active' if active_tab == 'archive_status' else '' }}">Archive Status</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
+    <a href="/citation" class="{{ 'active' if active_tab == 'citation' else '' }}">Citation</a>
   </nav>
 """
 
@@ -1099,6 +1100,29 @@ INFO_TEMPLATE = """
 </body>
 </html>
 """
+
+
+CITATION_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Citation</title>
+  <style>""" + SHARED_STYLE + """</style>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <p>This page is currently under development and does not have a citable DOI. Once created, this page will link to the direct citation.</p>
+  <p>If you make use of this page for your research, please use the following acknowledgement:</p>
+  <p>Source code: <a href="https://github.com/zachway/spectra_database" target="_blank" rel="noopener">github.com/zachway/spectra_database</a></p>
+</body>
+</html>
+"""
+
+
+@app.route("/citation")
+def citation():
+    return render_template_string(CITATION_TEMPLATE, active_tab="citation")
 
 
 @app.route("/info")
