@@ -28,7 +28,7 @@ import astropy.units as u
 import duckdb
 import numpy as np
 from astropy.coordinates import SkyCoord
-from flask import Flask, render_template_string, request
+from flask import Flask, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
 from ingest.add_star import resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
@@ -173,7 +173,6 @@ NAV_HTML = """
     <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
     <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
     <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Leaderboard</a>
-    <a href="/stats" class="{{ 'active' if active_tab == 'stats' else '' }}">Stats</a>
     <a href="/status" class="{{ 'active' if active_tab == 'archive_status' else '' }}">Archive Status</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
     <a href="/citation" class="{{ 'active' if active_tab == 'citation' else '' }}">Citation</a>
@@ -547,7 +546,7 @@ TIMEPLOTS_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">Fixed 6-month periods. At each period, two top-10 lists are computed: the 10 stars with the most cumulative (all-time-so-far) observations, and the 10 with the most observations within that period alone. Every star that ever broke into either list, at any period, gets a line in both charts below — so there can be more than 10 lines total, and a line can start partway through the timeline (whenever that star first qualified) and stop appearing again once it drops out of that period's top 10, rather than dragging a stale line across the whole chart. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see the Stats tab) can be higher than what's reflected here. Log scale, so a period with zero observations for a star just leaves a gap rather than a dip to zero.</p>
+  <p class="note">Fixed 6-month periods. At each period, two top-10 lists are computed: the 10 stars with the most cumulative (all-time-so-far) observations, and the 10 with the most observations within that period alone. Every star that ever broke into either list, at any period, gets a line in both charts below — so there can be more than 10 lines total, and a line can start partway through the timeline (whenever that star first qualified) and stop appearing again once it drops out of that period's top 10, rather than dragging a stale line across the whole chart. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see Stats below) can be higher than what's reflected here. Log scale, so a period with zero observations for a star just leaves a gap rather than a dip to zero.</p>
   <h2>Cumulative observations</h2>
   {% if cumulative_traces %}
     <div id="cumulative-plot"></div>
@@ -601,6 +600,79 @@ TIMEPLOTS_TEMPLATE = """
   {% else %}
     <p>No dated observations yet.</p>
   {% endif %}
+
+  <hr>
+  <h2>Stats</h2>
+  <dl>
+    <dt>Tracked stars</dt><dd>{{ "{:,}".format(total_stars) }}</dd>
+    <dt>Spectroscopy holdings</dt><dd>{{ "{:,}".format(total_holdings) }}</dd>
+  </dl>
+
+  <h3>Most observed stars</h3>
+  <table>
+    <tr><th>Star</th><th>Observations</th></tr>
+    {% for r in most_observed %}
+    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3>Trending — most observed in the last {{ trending_years }} years</h3>
+  {% if trending %}
+    <table>
+      <tr><th>Star</th><th>Observations</th></tr>
+      {% for r in trending %}
+      <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="note">Nothing in the last {{ trending_years }} years yet — most tracked holdings are decades-old archival spectra, and the bulk direct-Gaia-column archives (DESI, SDSS-V) don't carry per-observation dates at all, so "trending" will stay sparse until enough recently-dated archives (ESO, MAST, KOA, NOIRLab) are synced.</p>
+  {% endif %}
+
+  <h3>Holdings by archive</h3>
+  <table>
+    <tr><th>Archive</th><th>Holdings</th></tr>
+    {% for r in by_archive %}
+    <tr><td>{{ r.display_name }}</td><td>{{ "{:,}".format(r.n) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3>Matches by method</h3>
+  <table>
+    <tr><th>Method</th><th>Count</th></tr>
+    {% for r in by_method %}
+    <tr><td>{{ r.match_method }}</td><td>{{ "{:,}".format(r.n) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3>Nearest tracked stars</h3>
+  <p class="note">By parallax (distance = 1000 / parallax_mas, no error cut applied — treat as approximate).</p>
+  <table>
+    <tr><th>Star</th><th>Distance (pc)</th></tr>
+    {% for r in nearest %}
+    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.2f"|format(r.distance_pc) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3>Fastest movers</h3>
+  <p class="note">By total proper motion. For reference, Barnard's Star (the fastest known) moves ~10,358 mas/yr.</p>
+  <table>
+    <tr><th>Star</th><th>Proper motion (mas/yr)</th></tr>
+    {% for r in fastest_movers %}
+    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.1f"|format(r.total_pm) }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h3>Rough spectral-type distribution</h3>
+  <p class="note">A simple BP-RP color bucketing, not real spectral classification — that needs actual spectroscopy, not one color index. Illustrative only.</p>
+  <table>
+    {% for r in spectral_types %}
+    <tr>
+      <td style="width: 4rem;">{{ r.bucket }}</td>
+      <td><div style="background: #000; height: 1rem; width: {{ r.pct }}%;"></div></td>
+      <td style="width: 6rem; text-align: right;">{{ "{:,}".format(r.n) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
 </body>
 </html>
 """
@@ -657,127 +729,12 @@ def timeplots():
                 }
             )
 
-    return render_template_string(
-        TIMEPLOTS_TEMPLATE,
-        period_labels=period_labels,
-        cumulative_traces=cumulative_traces,
-        period_traces=period_traces,
-        active_tab="timeplots",
-    )
-
-
-STATS_TEMPLATE = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Spectra Database — Stats</title>
-  <style>""" + SHARED_STYLE + """</style>
-</head>
-<body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <dl>
-    <dt>Tracked stars</dt><dd>{{ "{:,}".format(total_stars) }}</dd>
-    <dt>Spectroscopy holdings</dt><dd>{{ "{:,}".format(total_holdings) }}</dd>
-  </dl>
-
-  <hr>
-  <h2>Most observed stars</h2>
-  <table>
-    <tr><th>Star</th><th>Observations</th></tr>
-    {% for r in most_observed %}
-    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
-    {% endfor %}
-  </table>
-
-  <hr>
-  <h2>Trending — most observed in the last {{ trending_years }} years</h2>
-  {% if trending %}
-    <table>
-      <tr><th>Star</th><th>Observations</th></tr>
-      {% for r in trending %}
-      <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
-      {% endfor %}
-    </table>
-  {% else %}
-    <p class="note">Nothing in the last {{ trending_years }} years yet — most tracked holdings are decades-old archival spectra, and the bulk direct-Gaia-column archives (DESI, SDSS-V) don't carry per-observation dates at all, so "trending" will stay sparse until enough recently-dated archives (ESO, MAST, KOA, NOIRLab) are synced.</p>
-  {% endif %}
-
-  <hr>
-  <h2>Holdings by archive</h2>
-  <table>
-    <tr><th>Archive</th><th>Holdings</th></tr>
-    {% for r in by_archive %}
-    <tr><td>{{ r.display_name }}</td><td>{{ "{:,}".format(r.n) }}</td></tr>
-    {% endfor %}
-  </table>
-
-  <hr>
-  <h2>Matches by method</h2>
-  <table>
-    <tr><th>Method</th><th>Count</th></tr>
-    {% for r in by_method %}
-    <tr><td>{{ r.match_method }}</td><td>{{ "{:,}".format(r.n) }}</td></tr>
-    {% endfor %}
-  </table>
-
-  <hr>
-  <h2>Nearest tracked stars</h2>
-  <p class="note">By parallax (distance = 1000 / parallax_mas, no error cut applied — treat as approximate).</p>
-  <table>
-    <tr><th>Star</th><th>Distance (pc)</th></tr>
-    {% for r in nearest %}
-    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.2f"|format(r.distance_pc) }}</td></tr>
-    {% endfor %}
-  </table>
-
-  <hr>
-  <h2>Fastest movers</h2>
-  <p class="note">By total proper motion. For reference, Barnard's Star (the fastest known) moves ~10,358 mas/yr.</p>
-  <table>
-    <tr><th>Star</th><th>Proper motion (mas/yr)</th></tr>
-    {% for r in fastest_movers %}
-    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.1f"|format(r.total_pm) }}</td></tr>
-    {% endfor %}
-  </table>
-
-  <hr>
-  <h2>Rough spectral-type distribution</h2>
-  <p class="note">A simple BP-RP color bucketing, not real spectral classification — that needs actual spectroscopy, not one color index. Illustrative only.</p>
-  <table>
-    {% for r in spectral_types %}
-    <tr>
-      <td style="width: 4rem;">{{ r.bucket }}</td>
-      <td><div style="background: #000; height: 1rem; width: {{ r.pct }}%;"></div></td>
-      <td style="width: 6rem; text-align: right;">{{ "{:,}".format(r.n) }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-</body>
-</html>
-"""
-
-# Natural OBAFGKM order — GROUP BY doesn't preserve it, so the display order
-# is applied in Python after querying.
-SPECTRAL_BUCKETS = ["O/B (hot)", "A", "F", "G", "K", "M (cool)"]
-
-
-def _known_as(row: dict) -> str:
-    if row.get("name_aliases"):
-        return row["name_aliases"][0]
-    return row.get("input_name") or str(row["gaia_source_id"])
-
-
-@app.route("/stats")
-def stats():
-    cur = get_cursor()
-
     # stats_summary is precomputed by scripts.export_to_parquet — most-
     # observed, trending, total_holdings, by-archive and by-method all used
     # to be separate live queries here, each scanning some or all of the
     # ever-growing spectroscopy_holdings table on every request. See that
-    # module for the full reasoning (same OOM-shaped risk as the
-    # Leaderboard, just five smaller scans instead of one huge one).
+    # module for the full reasoning (same OOM-shaped risk as the top-5-per-
+    # period selection above, just five smaller scans instead of one huge one).
     cur.execute("SELECT * FROM stats_summary")
     summary = _rows_as_dicts(cur)[0]
     most_observed = summary["most_observed"]
@@ -843,13 +800,32 @@ def stats():
     ]
 
     return render_template_string(
-        STATS_TEMPLATE,
+        TIMEPLOTS_TEMPLATE,
+        period_labels=period_labels,
+        cumulative_traces=cumulative_traces,
+        period_traces=period_traces,
         most_observed=most_observed, trending=trending, trending_years=trending_years,
         total_stars=total_stars, total_holdings=total_holdings,
         by_archive=by_archive, by_method=by_method,
         nearest=nearest, fastest_movers=fastest_movers, spectral_types=spectral_types,
-        active_tab="stats",
+        active_tab="timeplots",
     )
+
+
+# Natural OBAFGKM order — GROUP BY doesn't preserve it, so the display order
+# is applied in Python after querying.
+SPECTRAL_BUCKETS = ["O/B (hot)", "A", "F", "G", "K", "M (cool)"]
+
+
+def _known_as(row: dict) -> str:
+    if row.get("name_aliases"):
+        return row["name_aliases"][0]
+    return row.get("input_name") or str(row["gaia_source_id"])
+
+
+@app.route("/stats")
+def stats():
+    return redirect("/timeplots")
 
 
 # (category db value, display label) -- fixed order so every archive's row
@@ -870,29 +846,28 @@ ARCHIVE_STATUS_CATEGORIES = [
 # precomputed. Kept in sync with each archive module's docstring; update
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
-    ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "hits a server-side timeout on the same query shape used for HST; not yet worked around"),
-    ("MAST", "IUE, FUSE (older collections)", "not yet checked at all -- unknown whether the same ivoa.obscore query shape even works for these"),
-    ("NOIRLab Astro Data Archive", "CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI", "share the same API as the currently-tracked SOAR Goodman Spectrograph, just not wired up yet"),
+    ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "server-side timeout on the HST query shape; not yet worked around"),
+    ("MAST", "IUE, FUSE (older collections)", "not yet checked"),
+    ("NOIRLab Astro Data Archive", "CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI", "same API as the tracked Goodman Spectrograph, not wired up yet"),
     ("Keck Observatory Archive", "DEIMOS, ESI, LRIS, NIRES", "only HIRES is tracked currently"),
     ("LBT — PEPSI", "MODS, LUCI", "also spectroscopy-capable, not yet added"),
     ("CARMENES", "NIR channel (0.96-1.71 μm)", "only the VIS channel (0.52-0.96 μm) is tracked currently"),
     ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
-    ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
-    ("—", "OIRSA (CfA)", "a ~2011 stateful session-driven search wizard with no documented direct-query API; investigated, meaningfully more reverse-engineering than any archive implemented so far"),
-    ("—", "ARIES DOT (3.6m Devasthal)", "no public archive at all -- proposal listing is empty and the only data endpoint 401s (PI-login only); investigated, not yet worth the build"),
+    ("—", "NAOJ (Subaru)", "no bulk query, only a fragile per-object lookup; not yet worth the build"),
+    ("—", "OIRSA (CfA)", "stateful session-driven search wizard, no documented API; more reverse-engineering than justified so far"),
+    ("—", "ARIES DOT (3.6m Devasthal)", "no public archive; the one data endpoint is PI-login only"),
     ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
-    ("—", "DAO (Dominion Astrophysical Observatory, Canada)", "confirmed live: already on the same CADC TAP endpoint used by cfht_cadc.py/gemini.py, obs_collection='DAO' -- 263,980 spectrum rows, real ra/dec/target_name, 1986-present (Cassegrain + coude spectrographs). Same query shape as gemini.py, just not wired up yet -- highest-value remaining gap found so far"),
-    ("—", "HARPS-N / TNG (IA2 archive, archives.ia2.inaf.it/tng)", "not yet investigated -- a separate public archive from ESO's HARPS (La Silla), likely relevant given existing RV-spectrograph coverage (CARMENES)"),
-    ("—", "ELODIE (OHP, atlas.obs-hp.fr/elodie)", "not yet investigated -- historical archive (1994-2006), predecessor to SOPHIE at the same site; documented HTTP-based per-object query with ASCII/FITS output, looks tractable"),
-    ("—", "SOPHIE (OHP, atlas.obs-hp.fr/sophie)", "not yet investigated -- public archive with a documented advanced query interface and direct per-spectrum URLs (wget by sequence number); French RV-survey counterpart to CARMENES/HARPS-N"),
-    ("—", "GTC (Gran Telescopio Canarias, Spain)", "not yet investigated -- confirmed VO-compliant public archive (1yr proprietary period) at gtc.sdc.cab.inta-csic.es, redirects to a /gtc_tap/ path that 403s on a direct probe; needs a proper session to find the real endpoint"),
-    ("—", "Asiago Observatory (Italy, IA2)", "not yet investigated -- same IA2 infrastructure as HARPS-N/TNG above; digitized spectra from 1951-1994 plus modern data, 2yr proprietary period"),
-    ("—", "ING Archive (WHT/INT/JKT, La Palma, casu.ast.cam.ac.uk/casuadc/ingarch)", "not yet investigated -- general PI archive (~430,000 observations, multiple spectrographs incl. ISIS) in the same vein as ESO/Gemini/KOA/CFHT, but access looked like a web form rather than a TAP/API on first pass"),
-    ("—", "BeSS (Be Star Spectra, France, basebe.obspm.fr)", "not yet investigated -- 364,330 spectra of individually-named Be stars (professional + amateur, validated), likely good overlap with a curated star list; only a web query form found so far, no confirmed API"),
-    ("—", "SALT HRS (SAAO)", "not yet investigated -- public archive exists (1yr proprietary period) but no bulk/TAP access method confirmed yet"),
-    ("—", "Lick / Mt. Hamilton (Shane — Hamilton Echelle + Kast, APF Levy Spectrometer)", "not yet investigated -- corrected 2026-07-22: this was wrongly called UC-community-only; confirmed live at mthamilton.ucolick.org/data/ it's a real date-hierarchy archive back to 2001 with a per-night/per-PI proprietary period, same model as ESO/GTC -- once expired, data lands in an unauthenticated .../public/ subdirectory with real FITS files and timestamps. No TAP/API, would be HTML-scraped by date like eso.py/gemini.py, but genuinely crawlable, not a dead end"),
-    ("—", "IAO Hanle (HFOSC/HESP, India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these; same shape as NAOJ/OIRSA/ARIES DOT above"),
+    ("—", "DAO (Dominion Astrophysical Observatory, Canada)", "same CADC TAP endpoint as CFHT/Gemini, ~264,000 rows available, not wired up yet"),
+    ("—", "HARPS-N / TNG (IA2 archive)", "not yet investigated"),
+    ("—", "ELODIE (OHP)", "not yet investigated; documented per-object query API, looks tractable"),
+    ("—", "SOPHIE (OHP)", "not yet investigated; documented query interface, looks tractable"),
+    ("—", "GTC (Gran Telescopio Canarias, Spain)", "not yet investigated; TAP endpoint 403s without a proper session"),
+    ("—", "Asiago Observatory (Italy, IA2)", "not yet investigated"),
+    ("—", "ING Archive (WHT/INT/JKT, La Palma)", "not yet investigated; looks like a web form, not a TAP/API"),
+    ("—", "BeSS (Be Star Spectra, France)", "not yet investigated; only a web query form found, no confirmed API"),
+    ("—", "SALT HRS (SAAO)", "not yet investigated; no bulk/TAP access confirmed yet"),
+    ("—", "IAO Hanle (India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these"),
 ]
 
 ARCHIVE_STATUS_TEMPLATE = """
@@ -905,7 +880,7 @@ ARCHIVE_STATUS_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Stats tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them.</p>
+  <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Leaderboard tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them.</p>
   <table>
     <tr>
       <th>Archive</th><th>Last synced</th><th>Status</th><th>Observations span</th><th>Total</th>
@@ -1051,7 +1026,7 @@ INFO_TEMPLATE = """
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
   </ul>
 
-  <p class="note">See the Archive Status tab for when each archive was last synced, a per-archive match breakdown, and the tracked-instruments/known-gaps tables, and the Stats tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
+  <p class="note">See the Archive Status tab for when each archive was last synced, a per-archive match breakdown, and the tracked-instruments/known-gaps tables, and the Leaderboard tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
 
   <h2>Needs-review queue</h2>
   <p class="note">Ambiguous positional matches — 2+ tracked stars fell within the 1.0" radius of the archive's reported position, so no single star was assigned. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
