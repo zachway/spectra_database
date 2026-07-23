@@ -885,7 +885,6 @@ NOT_YET_TRACKED = [
     ("—", "ING Archive (WHT/INT/JKT, La Palma, casu.ast.cam.ac.uk/casuadc/ingarch)", "not yet investigated -- general PI archive (~430,000 observations, multiple spectrographs incl. ISIS) in the same vein as ESO/Gemini/KOA/CFHT, but access looked like a web form rather than a TAP/API on first pass"),
     ("—", "BeSS (Be Star Spectra, France, basebe.obspm.fr)", "not yet investigated -- 364,330 spectra of individually-named Be stars (professional + amateur, validated), likely good overlap with a curated star list; only a web query form found so far, no confirmed API"),
     ("—", "SALT HRS (SAAO)", "not yet investigated -- public archive exists (1yr proprietary period) but no bulk/TAP access method confirmed yet"),
-    ("—", "Lick / Mt. Hamilton (Shane — Hamilton Echelle + Kast, APF Levy Spectrometer)", "not yet investigated -- corrected 2026-07-22: this was wrongly called UC-community-only; confirmed live at mthamilton.ucolick.org/data/ it's a real date-hierarchy archive back to 2001 with a per-night/per-PI proprietary period, same model as ESO/GTC -- once expired, data lands in an unauthenticated .../public/ subdirectory with real FITS files and timestamps. No TAP/API, would be HTML-scraped by date like eso.py/gemini.py, but genuinely crawlable, not a dead end"),
     ("—", "IAO Hanle (HFOSC/HESP, India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these; same shape as NAOJ/OIRSA/ARIES DOT above"),
 ]
 
