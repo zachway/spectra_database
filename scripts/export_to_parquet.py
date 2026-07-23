@@ -22,6 +22,8 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import tempfile
 
 import duckdb
 
@@ -110,70 +112,121 @@ LEADERBOARD_TOP_N = 10
 # to keep the top 5 -- confirmed live as what was actually driving the OOM
 # (1.1GB+) even after the raw-GROUP-BY-only version of this fix shipped.
 #
-# Ranking is real work better left to a real query engine than a Python
-# loop, so it's done here with window functions instead: a full
-# star x period grid (needed so a star's cumulative total carries forward
-# through periods where it had no new observations, and can still rank) is
-# ranked with ROW_NUMBER() partitioned per period, and only rows where the
-# star made top-N by *either* metric at *any* period survive. That collapses
-# ~2M-star x ~70-period grid down to a few tens of thousands of rows --
-# confirmed live (17,612 rows from a real run, ~49s) -- which webapp.app can
-# now just read and reshape into chart traces with no computation of its own.
-LEADERBOARD_QUERY = f"""
-WITH counts AS (
-    SELECT
-        gaia_source_id,
-        year(obs_date) AS yr,
-        CASE WHEN month(obs_date) <= 6 THEN 1 ELSE 2 END AS half,
-        count(*) AS n
-    FROM pg.spectroscopy_holdings
-    WHERE obs_date IS NOT NULL AND gaia_source_id IS NOT NULL
-    GROUP BY gaia_source_id, yr, half
+# Second cut moved the ranking into one SQL query using window functions
+# over a star x period grid (cross join, needed so a star's cumulative
+# total carries forward through periods where it had no new observations,
+# and can still rank). That worked at ~2M stars / ~70 periods, but LAMOST
+# pushed the real star count with dated observations to 6.1M -- a 6.1M x
+# 74 = ~453M row grid -- which OOM'd DuckDB's 24.9 GiB memory_limit even
+# with disk-spilling enabled (temp_directory set), confirmed live. The
+# grid was always ~60x bigger than it needed to be: only ~7.3M (star,
+# period) pairs actually have any observations at all.
+#
+# Rewritten below to never materialize that grid:
+#   - Within-period top-N doesn't need it at all -- a star with zero new
+#     observations this period can never outrank one with a positive
+#     count, so ranking directly against the real (star, period, n) rows
+#     (no zero-filled ones) gives the same top-N.
+#   - Cumulative top-N does need every active star's running total as of
+#     each period (including periods where it didn't newly observe), but
+#     that's a sweep, not a cross join: walk the ~74 periods in order,
+#     keep one running total per star ever observed (bounded by star
+#     count, not star x period), and snapshot the top-N after each
+#     period's update. Same ranking result as the old grid-based window
+#     function, without ever holding more than one row per star.
+#   - Only once the (small, low tens-of-thousands) set of stars that ever
+#     made top-N by either metric is known does a star x period grid get
+#     built -- cast stars only, ~74x that small set, nowhere near the
+#     full 6.1M-star grid.
+LEADERBOARD_COUNTS_QUERY = """
+SELECT
+    gaia_source_id,
+    year(obs_date) AS yr,
+    CASE WHEN month(obs_date) <= 6 THEN 1 ELSE 2 END AS half,
+    count(*) AS n
+FROM pg.spectroscopy_holdings
+WHERE obs_date IS NOT NULL AND gaia_source_id IS NOT NULL
+GROUP BY gaia_source_id, yr, half
+"""
+
+LEADERBOARD_FINAL_QUERY = f"""
+WITH cast_stars AS (
+    SELECT gaia_source_id FROM leaderboard_top_period
+    UNION
+    SELECT gaia_source_id FROM leaderboard_top_cum
 ),
 periods AS (
-    SELECT DISTINCT yr, half FROM counts
-),
-stars_with_counts AS (
-    SELECT DISTINCT gaia_source_id FROM counts
+    SELECT DISTINCT yr, half FROM leaderboard_counts
 ),
 grid AS (
-    SELECT s.gaia_source_id, p.yr, p.half
-    FROM stars_with_counts s CROSS JOIN periods p
-),
-filled AS (
-    SELECT g.gaia_source_id, g.yr, g.half, COALESCE(c.n, 0) AS n
-    FROM grid g
-    LEFT JOIN counts c USING (gaia_source_id, yr, half)
-),
-cum AS (
-    SELECT gaia_source_id, yr, half, n,
-        SUM(n) OVER (
-            PARTITION BY gaia_source_id ORDER BY yr, half
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS cum_n
-    FROM filled
-),
-ranked AS (
-    SELECT *,
-        ROW_NUMBER() OVER (PARTITION BY yr, half ORDER BY n DESC, gaia_source_id) AS period_rank,
-        ROW_NUMBER() OVER (PARTITION BY yr, half ORDER BY cum_n DESC, gaia_source_id) AS cum_rank
-    FROM cum
-),
-cast_stars AS (
-    SELECT DISTINCT gaia_source_id FROM ranked
-    WHERE period_rank <= {LEADERBOARD_TOP_N} OR cum_rank <= {LEADERBOARD_TOP_N}
+    SELECT cs.gaia_source_id, p.yr, p.half
+    FROM cast_stars cs CROSS JOIN periods p
 )
 SELECT
-    r.gaia_source_id,
-    COALESCE(s.name_aliases[1], s.input_name, CAST(r.gaia_source_id AS VARCHAR)) AS label,
-    r.yr, r.half,
-    CASE WHEN r.period_rank <= {LEADERBOARD_TOP_N} THEN r.n ELSE NULL END AS within_n,
-    CASE WHEN r.cum_rank <= {LEADERBOARD_TOP_N} THEN r.cum_n ELSE NULL END AS cumulative_n
-FROM ranked r
-JOIN cast_stars cs USING (gaia_source_id)
-JOIN pg.stars s ON s.gaia_source_id = r.gaia_source_id
-ORDER BY r.gaia_source_id, r.yr, r.half
+    g.gaia_source_id,
+    COALESCE(s.name_aliases[1], s.input_name, CAST(g.gaia_source_id AS VARCHAR)) AS label,
+    g.yr, g.half,
+    tp.n AS within_n,
+    tc.cum_n AS cumulative_n
+FROM grid g
+LEFT JOIN leaderboard_top_period tp USING (gaia_source_id, yr, half)
+LEFT JOIN leaderboard_top_cum tc USING (gaia_source_id, yr, half)
+JOIN pg.stars s ON s.gaia_source_id = g.gaia_source_id
+ORDER BY g.gaia_source_id, g.yr, g.half
 """
+
+
+def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
+    con.execute(f"CREATE OR REPLACE TEMP TABLE leaderboard_counts AS {LEADERBOARD_COUNTS_QUERY}")
+
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE leaderboard_top_period AS
+        SELECT gaia_source_id, yr, half, n
+        FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY yr, half ORDER BY n DESC, gaia_source_id
+            ) AS period_rank
+            FROM leaderboard_counts
+        )
+        WHERE period_rank <= {LEADERBOARD_TOP_N}
+    """)
+
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE leaderboard_cum_state (
+            gaia_source_id BIGINT PRIMARY KEY, cum_n BIGINT
+        )
+    """)
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE leaderboard_top_cum (
+            gaia_source_id BIGINT, yr INTEGER, half INTEGER, cum_n BIGINT
+        )
+    """)
+    periods = con.execute(
+        "SELECT DISTINCT yr, half FROM leaderboard_counts ORDER BY yr, half"
+    ).fetchall()
+    for yr, half in periods:
+        con.execute(
+            """
+            INSERT INTO leaderboard_cum_state (gaia_source_id, cum_n)
+            SELECT gaia_source_id, n FROM leaderboard_counts
+            WHERE yr = ? AND half = ?
+            ON CONFLICT (gaia_source_id) DO UPDATE
+                SET cum_n = leaderboard_cum_state.cum_n + excluded.cum_n
+            """,
+            [yr, half],
+        )
+        con.execute(
+            f"""
+            INSERT INTO leaderboard_top_cum
+            SELECT gaia_source_id, ?, ?, cum_n
+            FROM leaderboard_cum_state
+            ORDER BY cum_n DESC, gaia_source_id
+            LIMIT {LEADERBOARD_TOP_N}
+            """,
+            [yr, half],
+        )
+
+    _atomic_copy(con, LEADERBOARD_FINAL_QUERY, path)
 
 # Precomputed "most observed" star list for the CMD page — was a random
 # USING SAMPLE over `stars` (cheap: no join needed), changed to the N
@@ -303,33 +356,47 @@ def _atomic_copy(con: duckdb.DuckDBPyConnection, select_sql: str, path: str) -> 
 
 def export_tables(database_url: str, out_dir: str) -> None:
     con = duckdb.connect()
-    con.execute("INSTALL postgres")
-    con.execute("LOAD postgres")
-    con.execute(f"ATTACH '{database_url}' AS pg (TYPE postgres, READ_ONLY)")
-    for table in TABLES:
-        path = os.path.join(out_dir, f"{table}.parquet")
-        _atomic_copy(con, f"SELECT * FROM pg.{table}", path)
-        logger.info("exported %s -> %s", table, path)
+    # An in-memory connection has no temp_directory by default, so DuckDB
+    # can't spill oversized intermediate results (e.g. the leaderboard
+    # query's star x period grid) to disk -- it just errors out once
+    # memory_limit is hit instead. Confirmed live: LAMOST's addition pushed
+    # the leaderboard grid past the box's 24.9 GiB default memory_limit for
+    # the first time. Pointing temp_directory somewhere writable lets
+    # DuckDB spill instead of OOMing.
+    # dir=out_dir (not system /tmp, which can be small/quota-limited on a
+    # shared login node) since out_dir is already known to have room for
+    # the multi-GB parquet exports themselves.
+    spill_dir = tempfile.mkdtemp(prefix=".duckdb_export_spill_", dir=out_dir)
+    try:
+        con.execute(f"SET temp_directory = '{spill_dir}'")
+        con.execute("INSTALL postgres")
+        con.execute("LOAD postgres")
+        con.execute(f"ATTACH '{database_url}' AS pg (TYPE postgres, READ_ONLY)")
+        for table in TABLES:
+            path = os.path.join(out_dir, f"{table}.parquet")
+            _atomic_copy(con, f"SELECT * FROM pg.{table}", path)
+            logger.info("exported %s -> %s", table, path)
 
-    leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
-    _atomic_copy(con, LEADERBOARD_QUERY, leaderboard_path)
-    logger.info("exported leaderboard -> %s", leaderboard_path)
+        leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
+        _export_leaderboard(con, leaderboard_path)
+        logger.info("exported leaderboard -> %s", leaderboard_path)
 
-    cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
-    _atomic_copy(con, CMD_STARS_QUERY, cmd_stars_path)
-    logger.info("exported cmd_stars -> %s", cmd_stars_path)
+        cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
+        _atomic_copy(con, CMD_STARS_QUERY, cmd_stars_path)
+        logger.info("exported cmd_stars -> %s", cmd_stars_path)
 
-    archive_status_path = os.path.join(out_dir, "archive_status.parquet")
-    _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
-    logger.info("exported archive_status -> %s", archive_status_path)
+        archive_status_path = os.path.join(out_dir, "archive_status.parquet")
+        _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
+        logger.info("exported archive_status -> %s", archive_status_path)
 
-    instruments_path = os.path.join(out_dir, "instruments.parquet")
-    _atomic_copy(con, INSTRUMENTS_QUERY, instruments_path)
-    logger.info("exported instruments -> %s", instruments_path)
+        instruments_path = os.path.join(out_dir, "instruments.parquet")
+        _atomic_copy(con, INSTRUMENTS_QUERY, instruments_path)
+        logger.info("exported instruments -> %s", instruments_path)
 
-    export_stats_summary(con, out_dir)
-
-    con.close()
+        export_stats_summary(con, out_dir)
+    finally:
+        con.close()
+        shutil.rmtree(spill_dir, ignore_errors=True)
 
 
 def main() -> None:
