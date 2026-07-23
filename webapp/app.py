@@ -870,6 +870,7 @@ ARCHIVE_STATUS_CATEGORIES = [
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
     ("MAST", "JWST instruments (NIRSpec, MIRI, NIRISS, ...)", "hits a server-side timeout on the same query shape used for HST; not yet worked around"),
+    ("MAST", "IUE, FUSE (older collections)", "not yet checked at all -- unknown whether the same ivoa.obscore query shape even works for these"),
     ("NOIRLab Astro Data Archive", "CHIRON, echelle, KOSMOS, ARCoIRIS, TripleSpec, COSMOS, SAMI", "share the same API as the currently-tracked SOAR Goodman Spectrograph, just not wired up yet"),
     ("Keck Observatory Archive", "DEIMOS, ESI, LRIS, NIRES", "only HIRES is tracked currently"),
     ("LBT — PEPSI", "MODS, LUCI", "also spectroscopy-capable, not yet added"),
@@ -877,8 +878,20 @@ NOT_YET_TRACKED = [
     ("CARMENES", "co-added template library, broader CAHA archive", "only the public DR1 GTO portal is tracked"),
     ("—", "NAOJ (Subaru)", "public archive (SMOKA) has no bulk/filtered query -- only a fragile per-object-name lookup across thousands of distinct targets per instrument; investigated, not yet worth the build"),
     ("—", "OIRSA (CfA)", "a ~2011 stateful session-driven search wizard with no documented direct-query API; investigated, meaningfully more reverse-engineering than any archive implemented so far"),
+    ("—", "ARIES DOT (3.6m Devasthal)", "no public archive at all -- proposal listing is empty and the only data endpoint 401s (PI-login only); investigated, not yet worth the build"),
     ("LAMOST", "MRS (Medium Resolution Spectrograph)", "only LRS (Low Resolution) is tracked currently"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
+    ("—", "DAO (Dominion Astrophysical Observatory, Canada)", "confirmed live: already on the same CADC TAP endpoint used by cfht_cadc.py/gemini.py, obs_collection='DAO' -- 263,980 spectrum rows, real ra/dec/target_name, 1986-present (Cassegrain + coude spectrographs). Same query shape as gemini.py, just not wired up yet -- highest-value remaining gap found so far"),
+    ("—", "HARPS-N / TNG (IA2 archive, archives.ia2.inaf.it/tng)", "not yet investigated -- a separate public archive from ESO's HARPS (La Silla), likely relevant given existing RV-spectrograph coverage (CARMENES)"),
+    ("—", "ELODIE (OHP, atlas.obs-hp.fr/elodie)", "not yet investigated -- historical archive (1994-2006), predecessor to SOPHIE at the same site; documented HTTP-based per-object query with ASCII/FITS output, looks tractable"),
+    ("—", "SOPHIE (OHP, atlas.obs-hp.fr/sophie)", "not yet investigated -- public archive with a documented advanced query interface and direct per-spectrum URLs (wget by sequence number); French RV-survey counterpart to CARMENES/HARPS-N"),
+    ("—", "GTC (Gran Telescopio Canarias, Spain)", "not yet investigated -- confirmed VO-compliant public archive (1yr proprietary period) at gtc.sdc.cab.inta-csic.es, redirects to a /gtc_tap/ path that 403s on a direct probe; needs a proper session to find the real endpoint"),
+    ("—", "Asiago Observatory (Italy, IA2)", "not yet investigated -- same IA2 infrastructure as HARPS-N/TNG above; digitized spectra from 1951-1994 plus modern data, 2yr proprietary period"),
+    ("—", "ING Archive (WHT/INT/JKT, La Palma, casu.ast.cam.ac.uk/casuadc/ingarch)", "not yet investigated -- general PI archive (~430,000 observations, multiple spectrographs incl. ISIS) in the same vein as ESO/Gemini/KOA/CFHT, but access looked like a web form rather than a TAP/API on first pass"),
+    ("—", "BeSS (Be Star Spectra, France, basebe.obspm.fr)", "not yet investigated -- 364,330 spectra of individually-named Be stars (professional + amateur, validated), likely good overlap with a curated star list; only a web query form found so far, no confirmed API"),
+    ("—", "SALT HRS (SAAO)", "not yet investigated -- public archive exists (1yr proprietary period) but no bulk/TAP access method confirmed yet"),
+    ("—", "Lick / Mt. Hamilton (Shane — Hamilton Echelle + Kast, APF Levy Spectrometer)", "not yet investigated -- corrected 2026-07-22: this was wrongly called UC-community-only; confirmed live at mthamilton.ucolick.org/data/ it's a real date-hierarchy archive back to 2001 with a per-night/per-PI proprietary period, same model as ESO/GTC -- once expired, data lands in an unauthenticated .../public/ subdirectory with real FITS files and timestamps. No TAP/API, would be HTML-scraped by date like eso.py/gemini.py, but genuinely crawlable, not a dead end"),
+    ("—", "IAO Hanle (HFOSC/HESP, India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these; same shape as NAOJ/OIRSA/ARIES DOT above"),
 ]
 
 ARCHIVE_STATUS_TEMPLATE = """
