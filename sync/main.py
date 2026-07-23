@@ -38,6 +38,8 @@ from sync.archives import (
     dao,
     desi,
     eso,
+    feros_gavo,
+    flashheros_gavo,
     galah,
     gemini,
     gemini_ghost,
@@ -79,6 +81,8 @@ ARCHIVES = {
     "carmenes": carmenes.fetch,
     "carmenes_caha": carmenes_caha.fetch,
     "desi": desi.fetch,
+    "feros_gavo": feros_gavo.fetch,
+    "flashheros_gavo": flashheros_gavo.fetch,
 }
 
 
