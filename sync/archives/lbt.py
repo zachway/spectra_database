@@ -72,10 +72,12 @@ sync/archives/koa.py's multi-instrument fetch.
 from __future__ import annotations
 
 import re
+import warnings
 
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
+from astropy.coordinates.angles.errors import IllegalSecondWarning
 from astropy.time import Time
 
 from sync.base import RawObservation, make_tap_service
@@ -177,7 +179,13 @@ def _fetch_instrument(
         ra_str, dec_str = _clean_str(row["ra"]), _clean_str(row["dec"])
         ra = dec = None
         if ra_str and dec_str:
-            coord = SkyCoord(ra=ra_str, dec=dec_str, unit=(u.hourangle, u.deg))
+            with warnings.catch_warnings():
+                # LBT's sexagesimal strings occasionally round to "60.00"
+                # seconds (e.g. "12:34:59.999" -> "12:34:60.00" upstream);
+                # astropy already handles this correctly by rolling over
+                # to +1 minute, so this is just noise, not a data problem.
+                warnings.filterwarnings("ignore", category=IllegalSecondWarning)
+                coord = SkyCoord(ra=ra_str, dec=dec_str, unit=(u.hourangle, u.deg))
             ra, dec = coord.ra.deg, coord.dec.deg
 
         records.append(
