@@ -20,7 +20,13 @@ is still deferred):
   some other physical star was getting silently merged onto omicron Ceti's
   gaia_source_id. A record whose name matches but whose own position is
   nowhere near that star falls through to positional matching instead of
-  being trusted blindly.
+  being trusted blindly. If that fallback also finds no positional
+  candidate, the record lands in needs_review rather than skipped — a
+  rejected name match is a real, often-correct candidate (e.g. the archive's
+  own logged position for that one exposure is simply wrong, not evidence of
+  a different star — confirmed live: an HR9070/LQ And record 49 degrees from
+  where that star is, SIMBAD-confirmed to be the correct alias regardless),
+  so it's worth a human's attention rather than being silently dropped.
 - positional_easy_match: only for records that didn't identifier-match. A
   q3c-indexed radial query (see _load_candidate_stars) narrows the tracked
   star list down to a small spatially-relevant candidate set per observation
@@ -251,6 +257,12 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
     # positional matching below instead of being trusted blindly.
     alias_lookup, star_positions = _load_star_aliases(conn)
     positional = []
+    # Records whose name match was rejected by the sanity check — tracked by
+    # identity (not content) since a positional fallback that also comes up
+    # empty must land in needs_review for these, not skipped (see module
+    # docstring), while a record that never had a name match at all keeps
+    # the ordinary skipped outcome.
+    name_match_rejected: set[int] = set()
     with conn.cursor() as cur:
         for r in no_gaia_column:
             gaia_id = alias_lookup.get(_normalize_name(r.raw_target_name)) if r.raw_target_name else None
@@ -258,6 +270,8 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
                 _upsert_holding(cur, archive_code, r, gaia_id, "name_resolved", "matched", None)
                 counts["name_matched"] += 1
             else:
+                if gaia_id is not None:
+                    name_match_rejected.add(id(r))
                 positional.append(r)
     conn.commit()
 
@@ -296,8 +310,9 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
             candidate_rows = _load_candidate_stars(conn, [r.ra for r in recs], [r.dec for r in recs], radius_deg)
             if not candidate_rows:
                 for r in recs:
-                    _upsert_holding(cur, archive_code, r, None, "positional_easy_match", "skipped", None)
-                counts["skipped"] += len(recs)
+                    status = "needs_review" if id(r) in name_match_rejected else "skipped"
+                    _upsert_holding(cur, archive_code, r, None, "positional_easy_match", status, None)
+                    counts[status] += 1
                 continue
 
             ids, propagated = _propagate(candidate_rows, epoch)
@@ -313,8 +328,9 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
             for i, r in enumerate(recs):
                 cands = candidates.get(i, [])
                 if not cands:
-                    _upsert_holding(cur, archive_code, r, None, "positional_easy_match", "skipped", None)
-                    counts["skipped"] += 1
+                    status = "needs_review" if id(r) in name_match_rejected else "skipped"
+                    _upsert_holding(cur, archive_code, r, None, "positional_easy_match", status, None)
+                    counts[status] += 1
                 elif len(cands) == 1:
                     gaia_id, theta = cands[0]
                     _upsert_holding(cur, archive_code, r, gaia_id, "positional_easy_match", "matched", float(theta))

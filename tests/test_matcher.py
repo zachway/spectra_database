@@ -210,8 +210,12 @@ def test_name_match_rejected_when_position_is_far_off(conn):
     record whose raw_target_name matches a tracked star's alias but whose
     own reported position is nowhere near that star (i.e. it's actually some
     other physical star sharing the same informal name) must not be force-
-    matched onto it — it should fall through to positional matching instead,
-    and end up skipped here since nothing else is tracked nearby.
+    matched onto it — it should fall through to positional matching instead.
+    With nothing else tracked nearby, it lands in needs_review rather than
+    skipped: confirmed live that a rejected name match is often actually
+    correct (the archive's own logged position for one exposure was just
+    wrong, not a different star), so it's worth a human's attention rather
+    than being silently dropped with no gaia_source_id at all.
     """
     with conn.cursor() as cur:
         _insert_star(cur, 900000000000000080, 4.9, -3.0, name_aliases=["Mira", "omi Cet"])
@@ -224,7 +228,8 @@ def test_name_match_rejected_when_position_is_far_off(conn):
     )
     counts = matcher.match_records(conn, "unit_test", [rec])
     assert counts["name_matched"] == 0
-    assert counts["skipped"] == 1
+    assert counts["skipped"] == 0
+    assert counts["needs_review"] == 1
 
     with conn.cursor() as cur:
         cur.execute(
@@ -233,7 +238,23 @@ def test_name_match_rejected_when_position_is_far_off(conn):
         )
         gaia_id, status = cur.fetchone()
     assert gaia_id is None
-    assert status == "skipped"
+    assert status == "needs_review"
+
+
+def test_name_match_rejected_still_skipped_if_zero_candidates_and_no_name_at_all(conn):
+    """Distinguishes the two "nothing nearby" outcomes: a record with no name
+    match at all (never had a rejected candidate to flag) still gets the
+    ordinary skipped status, not needs_review — needs_review is specifically
+    for a rejected *name* match, not every position-only miss.
+    """
+    rec = RawObservation(
+        archive_obs_id="no-name-1", archive_url="http://example.test/noname1",
+        ra=10.0, dec=10.0, obs_date=date(2016, 1, 1),
+        raw_target_name="Some Unrelated Name",
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["skipped"] == 1
+    assert counts["needs_review"] == 0
 
 
 def test_name_match_accepted_when_position_is_close(conn):
