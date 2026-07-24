@@ -51,6 +51,12 @@ matching for anything it can't resolve, so this can only add matches, not
 break anything — it's just not the fix for NOIRLab's positional-match rate
 that a clean target-name field would have been.
 
+OBJECT also isn't reliably typed as a string in the API's JSON — some FITS
+headers hold a purely numeric target label, which this API serializes as a
+JSON number, not a string. Passed through untouched, that broke matching
+downstream (str-only operations in add_star.py and matcher.py), so it's
+coerced with str() here.
+
 Cursor shape changed from a single flat {"last_dateobs": ...} (one
 instrument) to {instrument: {"last_dateobs": ...}, ...} (many). Reads a
 pre-existing flat "goodman"-only cursor as a fallback for the "goodman" key
@@ -142,7 +148,7 @@ def _fetch_instrument(instrument: str, last_dateobs: str) -> tuple[list[RawObser
                 program_id=row.get("proposal"),
                 ra=clean_float(row["ra_center"]),
                 dec=clean_float(row["dec_center"]),
-                raw_target_name=row.get("OBJECT") or None,
+                raw_target_name=str(row["OBJECT"]) if row.get("OBJECT") else None,
             )
         )
 
