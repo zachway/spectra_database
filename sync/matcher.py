@@ -12,7 +12,15 @@ is still deferred):
   single-star astrometric fit can be biased for binaries/crowded fields (seen
   live: a CFHT/CADC record for Stein 2051 A, a known visual binary, missed
   its positional match despite correct proper motion — its identifier would
-  have caught it). Identifier match sidesteps that entirely.
+  have caught it). Identifier match sidesteps that entirely. Still sanity-
+  checked against the record's own reported position when one is present
+  (see NAME_MATCH_SANITY_RADIUS_ARCSEC) — confirmed live: "Mira" is SIMBAD's
+  own proper name for omicron Ceti *and* an informal class label for any
+  Mira-type long-period variable, so an archive using "Mira" generically for
+  some other physical star was getting silently merged onto omicron Ceti's
+  gaia_source_id. A record whose name matches but whose own position is
+  nowhere near that star falls through to positional matching instead of
+  being trusted blindly.
 - positional_easy_match: only for records that didn't identifier-match. A
   q3c-indexed radial query (see _load_candidate_stars) narrows the tracked
   star list down to a small spatially-relevant candidate set per observation
@@ -55,6 +63,16 @@ MAX_PM_ARCSEC_PER_YEAR = 10.3
 # below, since q3c needs it *before* it knows which stars it'll return.
 GAIA_DR3_REF_EPOCH = 2016.0
 
+# How far a name-matched record's own reported position may sit from the
+# star it named before the name match is distrusted (see module docstring's
+# "Mira" case). Set well above any offset a legitimate identifier-over-
+# position case should ever show — the Stein 2051 A regression test uses a
+# ~50" offset to represent a biased single-star astrometric fit on a real
+# binary, and even a wide binary's true separation tops out at a few
+# arcmin — while still tight enough to reliably catch a name collision that
+# lands on a completely different part of the sky.
+NAME_MATCH_SANITY_RADIUS_ARCSEC = 600.0
+
 
 def _normalize_name(name: str) -> str:
     key = re.sub(r"\s+", "", name).upper()
@@ -91,16 +109,42 @@ def _load_candidate_stars(
         return cur.fetchall()
 
 
-def _load_star_aliases(conn: psycopg.Connection) -> dict[str, int]:
-    """Normalized alias -> gaia_source_id, for identifier matching."""
+def _load_star_aliases(conn: psycopg.Connection) -> tuple[dict[str, int], dict[int, tuple]]:
+    """Normalized alias -> gaia_source_id, for identifier matching, plus each
+    aliased star's own (ra, dec, ref_epoch, pmra, pmdec) for the name-match
+    sanity check in match_records — no separate query needed since every
+    star with an alias already comes back in this same row.
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT gaia_source_id, name_aliases FROM stars WHERE name_aliases IS NOT NULL")
+        cur.execute(
+            "SELECT gaia_source_id, name_aliases, ra, dec, ref_epoch, pmra, pmdec "
+            "FROM stars WHERE name_aliases IS NOT NULL"
+        )
         rows = cur.fetchall()
     lookup: dict[str, int] = {}
-    for gaia_source_id, aliases in rows:
+    positions: dict[int, tuple] = {}
+    for gaia_source_id, aliases, ra, dec, ref_epoch, pmra, pmdec in rows:
+        positions[gaia_source_id] = (ra, dec, ref_epoch, pmra, pmdec)
         for alias in aliases or []:
             lookup[_normalize_name(alias)] = gaia_source_id
-    return lookup
+    return lookup, positions
+
+
+def _name_match_plausible(gaia_id: int, star_positions: dict[int, tuple], r: RawObservation) -> bool:
+    """False if a name-matched record's own reported position sits farther
+    than NAME_MATCH_SANITY_RADIUS_ARCSEC from the star its name resolved to
+    — see module docstring's "Mira" case. True (trust the name match, as
+    before this check existed) whenever there's no position to check against.
+    """
+    if r.ra is None or r.dec is None or r.obs_date is None or not (-90.0 <= r.dec <= 90.0):
+        return True
+    star_row = star_positions.get(gaia_id)
+    if star_row is None:
+        return True
+    ra, dec, ref_epoch, pmra, pmdec = star_row
+    _, propagated = _propagate([(gaia_id, ra, dec, ref_epoch, pmra, pmdec)], _to_jyear(r.obs_date))
+    target = SkyCoord(ra=r.ra * u.deg, dec=r.dec * u.deg)
+    return propagated[0].separation(target).arcsec <= NAME_MATCH_SANITY_RADIUS_ARCSEC
 
 
 def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], SkyCoord]:
@@ -201,12 +245,16 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
     conn.commit()
 
     # Identifier match — tried before position, not just as a tiebreaker.
-    alias_lookup = _load_star_aliases(conn)
+    # Still sanity-checked against the record's own reported position when
+    # one is present (see _name_match_plausible / the "Mira" case in the
+    # module docstring) — a name match that fails the check falls through to
+    # positional matching below instead of being trusted blindly.
+    alias_lookup, star_positions = _load_star_aliases(conn)
     positional = []
     with conn.cursor() as cur:
         for r in no_gaia_column:
             gaia_id = alias_lookup.get(_normalize_name(r.raw_target_name)) if r.raw_target_name else None
-            if gaia_id is not None:
+            if gaia_id is not None and _name_match_plausible(gaia_id, star_positions, r):
                 _upsert_holding(cur, archive_code, r, gaia_id, "name_resolved", "matched", None)
                 counts["name_matched"] += 1
             else:
