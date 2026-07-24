@@ -21,6 +21,8 @@ Run against the hosted snapshot (what Cloud Run does):
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 from collections import defaultdict
 
@@ -28,7 +30,7 @@ import astropy.units as u
 import duckdb
 import numpy as np
 from astropy.coordinates import SkyCoord
-from flask import Flask, redirect, render_template_string, request
+from flask import Flask, Response, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
 from ingest.add_star import resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
@@ -43,7 +45,7 @@ MAX_NAME_LOOKUPS = 2000
 
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
-    "leaderboard", "cmd_stars", "archive_status", "instruments",
+    "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
 )
 
 
@@ -96,6 +98,18 @@ def get_cursor() -> duckdb.DuckDBPyConnection:
 def _rows_as_dicts(cur: duckdb.DuckDBPyConnection) -> list[dict]:
     columns = [c[0] for c in cur.description]
     return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def _csv_response(fieldnames: list[str], rows: list[dict], filename: str) -> Response:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _aitoff_project(ra_deg: list[float], dec_deg: list[float]) -> tuple[list[float], list[float]]:
@@ -168,11 +182,90 @@ CMD_SAMPLE_SIZE = 30000
 # valid points, not valid points among a sample of everything.
 SKY_SAMPLE_SIZE = 30000
 
+# Radial (cone) search by sky position, below the name search box. The
+# webapp has no q3c/spatial index available (that's Postgres-side, used
+# only by sync.matcher during ingest — see this module's docstring for why
+# the webapp reads a plain Parquet snapshot instead), so this is a
+# straight-up great-circle-distance computation over the whole `stars`
+# table rather than an indexed query. Same cost profile as /sky's existing
+# live full-table read (1.4M+ rows and growing) — DuckDB vectorizes the trig
+# over the whole column fast enough for interactive use; the dec-band
+# pre-filter below cuts most of that work for a typical small-radius search.
+RADIAL_SEARCH_DEFAULT_RADIUS_ARCMIN = 5.0
+RADIAL_SEARCH_MAX_RADIUS_ARCMIN = 300.0  # 5 degrees
+RADIAL_SEARCH_MAX_RESULTS = 200
+
+
+def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool):
+    try:
+        ra_val = float(ra_str) % 360.0
+        dec_val = float(dec_str)
+    except ValueError:
+        return _render_radial(ra_str, dec_str, radius_str, radial_error="RA and Dec must be decimal degrees.")
+    if not (-90.0 <= dec_val <= 90.0):
+        return _render_radial(ra_str, dec_str, radius_str, radial_error="Dec must be between -90 and 90 degrees.")
+
+    radius_arcmin = RADIAL_SEARCH_DEFAULT_RADIUS_ARCMIN
+    if radius_str:
+        try:
+            radius_arcmin = float(radius_str)
+        except ValueError:
+            return _render_radial(ra_str, dec_str, radius_str, radial_error="Radius must be a number of arcminutes.")
+    radius_arcmin = max(0.01, min(radius_arcmin, RADIAL_SEARCH_MAX_RADIUS_ARCMIN))
+    radius_deg = radius_arcmin / 60.0
+
+    cur = get_cursor()
+    cur.execute(
+        """
+        SELECT gaia_source_id, ra, dec, phot_g_mean_mag, name_aliases, input_name, sep_deg
+        FROM (
+            SELECT gaia_source_id, ra, dec, phot_g_mean_mag, name_aliases, input_name,
+                degrees(acos(least(1.0, greatest(-1.0,
+                    sin(radians(dec)) * sin(radians(?)) +
+                    cos(radians(dec)) * cos(radians(?)) * cos(radians(ra - ?))
+                )))) AS sep_deg
+            FROM stars
+            WHERE ra IS NOT NULL AND dec IS NOT NULL AND dec BETWEEN ? AND ?
+        ) t
+        WHERE sep_deg <= ?
+        ORDER BY sep_deg
+        LIMIT ?
+        """,
+        [dec_val, dec_val, ra_val, dec_val - radius_deg, dec_val + radius_deg, radius_deg, RADIAL_SEARCH_MAX_RESULTS],
+    )
+    rows = _rows_as_dicts(cur)
+    for r in rows:
+        r["known_as"] = _known_as(r)
+        r["sep_arcsec"] = r["sep_deg"] * 3600.0
+
+    if export_csv:
+        return _csv_response(
+            ["gaia_source_id", "known_as", "ra", "dec", "sep_arcsec", "phot_g_mean_mag"],
+            rows,
+            f"spectra_database_radial_ra{ra_val:.5f}_dec{dec_val:.5f}_r{radius_arcmin:g}arcmin.csv",
+        )
+
+    return _render_radial(ra_str, dec_str, str(radius_arcmin), radial_results=rows, radius_display=radius_arcmin)
+
+
+def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_results=None, radius_display=None):
+    return render_template_string(
+        PAGE_TEMPLATE, query=None, star=None, holdings=None,
+        error=None, resolved_source_id=None,
+        max_name_lookups=MAX_NAME_LOOKUPS,
+        batch_error=None, batch_note=None, batch_results=None,
+        active_tab="search",
+        ra=ra_str, dec=dec_str, radius=radius_str,
+        radial_searched=True, radial_error=radial_error, radial_results=radial_results,
+        radius_display=radius_display if radius_display is not None else radius_str,
+    )
+
 NAV_HTML = """
   <nav class="tabs">
     <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
     <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
     <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Leaderboard</a>
+    <a href="/instruments" class="{{ 'active' if active_tab == 'instruments' else '' }}">Instruments</a>
     <a href="/status" class="{{ 'active' if active_tab == 'archive_status' else '' }}">Archive Status</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
     <a href="/citation" class="{{ 'active' if active_tab == 'citation' else '' }}">Citation</a>
@@ -215,6 +308,39 @@ PAGE_TEMPLATE = """
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit">Search</button>
   </form>
+
+  <p class="note">Or search by sky position:</p>
+  <form method="get" action="" class="radial-form">
+    <input type="text" name="ra" placeholder="RA (deg)" value="{{ ra or '' }}" size="10">
+    <input type="text" name="dec" placeholder="Dec (deg)" value="{{ dec or '' }}" size="10">
+    <input type="text" name="radius" placeholder="Radius (arcmin, default {{ '%g'|format(5) }})" value="{{ radius or '' }}" size="20">
+    <button type="submit">Search radius</button>
+  </form>
+
+  {% if radial_searched %}
+    {% if radial_error %}
+      <p class="error">Error: {{ radial_error }}</p>
+    {% else %}
+      <p>{{ radial_results|length }} star{{ "s" if radial_results|length != 1 else "" }} found within {{ '%g'|format(radius_display|float) }}&#39; of RA {{ ra }}, Dec {{ dec }}.
+        {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}&amp;format=csv">Download as CSV</a>{% endif %}
+      </p>
+      {% if radial_results %}
+      <table>
+        <tr><th>Star</th><th>RA</th><th>Dec</th><th>Separation</th><th>G mag</th></tr>
+        {% for r in radial_results %}
+        <tr>
+          <td><a href="?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td>
+          <td>{{ "%.5f"|format(r.ra) }}</td>
+          <td>{{ "%.5f"|format(r.dec) }}</td>
+          <td>{{ '%.1f"'|format(r.sep_arcsec) }}</td>
+          <td>{{ r.phot_g_mean_mag if r.phot_g_mean_mag is not none else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+
   {% if resolved_source_id %}
     <p>"{{ query }}" resolved via SIMBAD to source_id {{ resolved_source_id }}.</p>
   {% endif %}
@@ -235,6 +361,7 @@ PAGE_TEMPLATE = """
     </dl>
 
     {% if holdings %}
+      <p><a href="?q={{ star.gaia_source_id }}&amp;format=csv">Download holdings as CSV</a></p>
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
         <summary>{{ g.display_name }} — {{ g.instrument or "—" }} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
@@ -264,6 +391,7 @@ PAGE_TEMPLATE = """
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
     <p><input type="file" name="file" accept=".txt,.csv"></p>
     <button type="submit">Look up list</button>
+    <button type="submit" name="format" value="csv">Look up and download CSV</button>
   </form>
 
   {% if batch_error %}
@@ -317,6 +445,13 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
 @app.route("/")
 def search():
     query = request.args.get("q", "").strip()
+    export_csv = request.args.get("format", "").strip().lower() == "csv"
+
+    ra_str = request.args.get("ra", "").strip()
+    dec_str = request.args.get("dec", "").strip()
+    if not query and (ra_str or dec_str):
+        return _radial_search(ra_str, dec_str, request.args.get("radius", "").strip(), export_csv)
+
     if not query:
         return _blank()
 
@@ -356,7 +491,16 @@ def search():
         """,
         [source_id],
     )
-    holdings = _group_holdings(_rows_as_dicts(cur))
+    raw_holdings = _rows_as_dicts(cur)
+
+    if export_csv:
+        return _csv_response(
+            ["display_name", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
+            raw_holdings,
+            f"spectra_database_holdings_{source_id}.csv",
+        )
+
+    holdings = _group_holdings(raw_holdings)
 
     return render_template_string(
         PAGE_TEMPLATE, query=query, star=star, holdings=holdings,
@@ -823,6 +967,115 @@ def _known_as(row: dict) -> str:
     return row.get("input_name") or str(row["gaia_source_id"])
 
 
+# Descriptive text only -- the actual sampling is baked into
+# scripts.export_to_parquet's INSTRUMENT_SKY_SAMPLE_QUERY (same "duplicated
+# constant, just for the caption" pattern as CMD_SAMPLE_SIZE above).
+INSTRUMENT_SKY_SAMPLE_TOP_N = 12
+INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT = 2000
+
+INSTRUMENTS_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Instruments</title>
+  <style>""" + SHARED_STYLE + """
+    #instrument-treemap, #instrument-sky { width: 100%; height: 700px; margin-top: 1rem; }
+  </style>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <h2>Holdings by archive and instrument</h2>
+  <p class="note">Size = number of holdings. Click a box to zoom into an archive's instruments.</p>
+  {% if treemap_labels %}
+    <div id="instrument-treemap"></div>
+    <script>
+      Plotly.newPlot('instrument-treemap', [{
+        type: 'treemap',
+        labels: {{ treemap_labels | tojson }},
+        parents: {{ treemap_parents | tojson }},
+        values: {{ treemap_values | tojson }},
+        textinfo: 'label+value',
+      }], { margin: { t: 10, l: 10, r: 10, b: 10 } }, { responsive: true });
+    </script>
+  {% else %}
+    <p>No instrument data yet.</p>
+  {% endif %}
+
+  <hr>
+  <h2>Where each instrument points</h2>
+  <p class="note">A sample of up to {{ "{:,}".format(per_instrument_cap) }} position-tagged observations for each of the {{ top_n }} instruments with the most of them, Aitoff-projected -- a rough fingerprint of each instrument's sky coverage (northern vs. southern observatories, survey footprints, pointed vs. all-sky programs). Click a legend entry to isolate one instrument.</p>
+  {% if sky_traces %}
+    <div id="instrument-sky"></div>
+    <script>
+      const skyTraces = {{ sky_traces | tojson }};
+      Plotly.newPlot('instrument-sky', skyTraces.map(t => ({
+        x: t.x, y: t.y, name: t.instrument, mode: 'markers', type: 'scattergl',
+        marker: { size: 3, opacity: 0.6 },
+        hovertemplate: t.instrument + '<extra></extra>',
+      })), {
+        xaxis: { showticklabels: false, zeroline: false, title: 'Right Ascension', scaleanchor: 'y' },
+        yaxis: { showticklabels: false, zeroline: false, title: 'Declination' },
+        hovermode: 'closest',
+        legend: { orientation: 'h' },
+      }, { responsive: true, scrollZoom: true });
+    </script>
+  {% else %}
+    <p>No position-tagged instrument data yet.</p>
+  {% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/instruments")
+def instruments_page():
+    # instruments (display_name, instrument, n) is precomputed by
+    # scripts.export_to_parquet -- see INSTRUMENTS_QUERY there.
+    cur = get_cursor()
+    cur.execute("SELECT display_name, instrument, n FROM instruments ORDER BY display_name, n DESC")
+    rows = _rows_as_dicts(cur)
+
+    # Treemap: one root-level node per archive (own value 0 -- Plotly's
+    # default 'remainder' branchvalues mode then sizes it as the sum of its
+    # instrument children, which is exactly the archive's total), one leaf
+    # per (archive, instrument).
+    treemap_labels, treemap_parents, treemap_values = [], [], []
+    seen_archives = set()
+    for r in rows:
+        if r["display_name"] not in seen_archives:
+            treemap_labels.append(r["display_name"])
+            treemap_parents.append("")
+            treemap_values.append(0)
+            seen_archives.add(r["display_name"])
+        treemap_labels.append(f"{r['display_name']} / {r['instrument']}")
+        treemap_parents.append(r["display_name"])
+        treemap_values.append(r["n"])
+
+    # instrument_sky_sample is precomputed by scripts.export_to_parquet --
+    # see INSTRUMENT_SKY_SAMPLE_QUERY there for why (a live per-request
+    # ROW_NUMBER()/random() sample over the full holdings table has the same
+    # OOM-shaped risk documented for the Leaderboard elsewhere in this file).
+    cur.execute("SELECT instrument, raw_ra, raw_dec FROM instrument_sky_sample")
+    sky_by_instrument: dict[str, list[dict]] = defaultdict(list)
+    for r in _rows_as_dicts(cur):
+        sky_by_instrument[r["instrument"]].append(r)
+
+    sky_traces = []
+    for instrument, pts in sky_by_instrument.items():
+        x, y = _aitoff_project([p["raw_ra"] for p in pts], [p["raw_dec"] for p in pts])
+        sky_traces.append({"instrument": instrument, "x": x, "y": y})
+
+    return render_template_string(
+        INSTRUMENTS_TEMPLATE,
+        treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
+        sky_traces=sky_traces,
+        top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
+        active_tab="instruments",
+    )
+
+
 @app.route("/stats")
 def stats():
     return redirect("/timeplots")
@@ -850,14 +1103,8 @@ NOT_YET_TRACKED = [
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive; the one data endpoint is PI-login only"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
-    ("—", "HARPS-N / TNG (IA2 archive)", "not yet investigated"),
-    ("—", "ELODIE (OHP)", "not yet investigated; documented per-object query API, looks tractable"),
-    ("—", "SOPHIE (OHP)", "not yet investigated; documented query interface, looks tractable"),
     ("—", "GTC (Gran Telescopio Canarias, Spain)", "not yet investigated; TAP endpoint 403s without a proper session"),
-    ("—", "Asiago Observatory (Italy, IA2)", "not yet investigated"),
-    ("—", "ING Archive (WHT/INT/JKT, La Palma)", "not yet investigated; looks like a web form, not a TAP/API"),
     ("—", "BeSS (Be Star Spectra, France)", "not yet investigated; only a web query form found, no confirmed API"),
-    ("—", "SALT HRS (SAAO)", "not yet investigated; no bulk/TAP access confirmed yet"),
     ("—", "IAO Hanle (India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these"),
 ]
 
@@ -1168,6 +1415,7 @@ def _parse_batch_lines(text: str) -> list[str]:
 
 @app.route("/batch", methods=["POST"])
 def batch_search():
+    export_csv = request.form.get("format", "").strip().lower() == "csv"
     uploaded = request.files.get("file")
     if uploaded and uploaded.filename:
         text = uploaded.read().decode("utf-8", errors="replace")
@@ -1247,6 +1495,13 @@ def batch_search():
             "status": "tracked", "known_as": known_as,
             "holdings_count": holdings_counts.get(source_id, 0),
         })
+
+    if export_csv:
+        return _csv_response(
+            ["query", "source_id", "status", "known_as", "holdings_count"],
+            results,
+            "spectra_database_batch_lookup.csv",
+        )
 
     note = f"{len(entries)} entries looked up."
     if truncated:

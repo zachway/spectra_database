@@ -33,6 +33,8 @@ unfiltered dump which mixed both — so no imatyp-equivalent filter is needed
 here.
 """
 
+from __future__ import annotations
+
 from datetime import date, datetime
 
 import astropy.units as u

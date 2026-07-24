@@ -40,6 +40,8 @@ blank-field case, so archive_obs_id/obs_date/download-URL construction stay
 reliable even on a row with a garbage or missing coordinate.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 
 import astropy.units as u
