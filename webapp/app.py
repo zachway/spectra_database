@@ -494,8 +494,16 @@ def search():
     raw_holdings = _rows_as_dicts(cur)
 
     if export_csv:
+        known_as = ", ".join(star["name_aliases"]) if star["name_aliases"] else star["input_name"]
+        for h in raw_holdings:
+            h["query"] = query
+            h["source_id"] = source_id
+            h["status"] = "tracked"
+            h["known_as"] = known_as
+            h["archive"] = h["display_name"]
         return _csv_response(
-            ["display_name", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
+            ["query", "source_id", "status", "known_as",
+             "archive", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
             raw_holdings,
             f"spectra_database_holdings_{source_id}.csv",
         )
@@ -1497,9 +1505,47 @@ def batch_search():
         })
 
     if export_csv:
+        holdings_by_source_id: dict[int, list[dict]] = {}
+        if all_source_ids:
+            cur.execute(
+                """
+                SELECT h.gaia_source_id, a.display_name, h.instrument, h.obs_date,
+                       h.match_status, h.match_method, h.archive_url
+                FROM spectroscopy_holdings h
+                JOIN archives a ON a.archive_code = h.archive_code
+                WHERE list_contains(?, h.gaia_source_id)
+                ORDER BY h.gaia_source_id, a.display_name, h.instrument, h.obs_date
+                """,
+                [all_source_ids],
+            )
+            for row in _rows_as_dicts(cur):
+                holdings_by_source_id.setdefault(row["gaia_source_id"], []).append(row)
+
+        # One row per holding (not per query) so the CSV is the actual list
+        # of spectra behind each star, not just a count -- matches what the
+        # single-star "download holdings" CSV already does. Queries with no
+        # holdings (or that didn't resolve/aren't tracked) still get one row
+        # so they aren't silently dropped from the export.
+        csv_rows = []
+        for r in results:
+            base = {"query": r["query"], "source_id": r["source_id"], "status": r["status"], "known_as": r["known_as"]}
+            star_holdings = holdings_by_source_id.get(r["source_id"], []) if r["source_id"] is not None else []
+            if not star_holdings:
+                csv_rows.append({**base, "archive": None, "instrument": None, "obs_date": None,
+                                  "match_status": None, "match_method": None, "archive_url": None})
+            else:
+                for h in star_holdings:
+                    csv_rows.append({
+                        **base,
+                        "archive": h["display_name"], "instrument": h["instrument"], "obs_date": h["obs_date"],
+                        "match_status": h["match_status"], "match_method": h["match_method"],
+                        "archive_url": h["archive_url"],
+                    })
+
         return _csv_response(
-            ["query", "source_id", "status", "known_as", "holdings_count"],
-            results,
+            ["query", "source_id", "status", "known_as",
+             "archive", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
+            csv_rows,
             "spectra_database_batch_lookup.csv",
         )
 
