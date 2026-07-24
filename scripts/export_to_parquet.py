@@ -96,6 +96,37 @@ GROUP BY a.display_name, h.instrument
 ORDER BY a.display_name, n DESC
 """
 
+# A sample of position-tagged holdings per top instrument, for the /instruments
+# page's sky-coverage-by-instrument map -- a live-per-request query here would
+# need a ROW_NUMBER()/random() window over potentially tens of millions of
+# rows for the biggest instruments, the same shape of full-table-sort cost
+# that already OOM'd the hosted container elsewhere in this file (see the
+# Leaderboard's long comment). Precomputed here where memory isn't capped,
+# same tradeoff as everything else in this module.
+INSTRUMENT_SKY_SAMPLE_TOP_N = 12
+INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT = 2000
+
+INSTRUMENT_SKY_SAMPLE_QUERY = f"""
+WITH top_instruments AS (
+    SELECT instrument, count(*) AS n
+    FROM pg.spectroscopy_holdings
+    WHERE instrument IS NOT NULL AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
+    GROUP BY instrument
+    ORDER BY n DESC
+    LIMIT {INSTRUMENT_SKY_SAMPLE_TOP_N}
+),
+sampled AS (
+    SELECT h.instrument, h.raw_ra, h.raw_dec,
+           ROW_NUMBER() OVER (PARTITION BY h.instrument ORDER BY random()) AS rn
+    FROM pg.spectroscopy_holdings h
+    JOIN top_instruments t ON t.instrument = h.instrument
+    WHERE h.raw_ra IS NOT NULL AND h.raw_dec IS NOT NULL
+)
+SELECT instrument, raw_ra, raw_dec
+FROM sampled
+WHERE rn <= {INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT}
+"""
+
 LEADERBOARD_TOP_N = 10
 
 # Fully precomputed Leaderboard chart data — not just the raw per-(star,
@@ -392,6 +423,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
         instruments_path = os.path.join(out_dir, "instruments.parquet")
         _atomic_copy(con, INSTRUMENTS_QUERY, instruments_path)
         logger.info("exported instruments -> %s", instruments_path)
+
+        instrument_sky_sample_path = os.path.join(out_dir, "instrument_sky_sample.parquet")
+        _atomic_copy(con, INSTRUMENT_SKY_SAMPLE_QUERY, instrument_sky_sample_path)
+        logger.info("exported instrument_sky_sample -> %s", instrument_sky_sample_path)
 
         export_stats_summary(con, out_dir)
     finally:

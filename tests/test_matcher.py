@@ -204,6 +204,67 @@ def test_name_resolution_falls_back_to_positional_when_no_alias_hit(conn):
     assert counts["positional_matched"] == 1
 
 
+def test_name_match_rejected_when_position_is_far_off(conn):
+    """The "Mira" case: "Mira" is SIMBAD's own proper name for omicron Ceti
+    *and* an informal class label for any Mira-type long-period variable. A
+    record whose raw_target_name matches a tracked star's alias but whose
+    own reported position is nowhere near that star (i.e. it's actually some
+    other physical star sharing the same informal name) must not be force-
+    matched onto it — it should fall through to positional matching instead,
+    and end up skipped here since nothing else is tracked nearby.
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000080, 4.9, -3.0, name_aliases=["Mira", "omi Cet"])
+    conn.commit()
+
+    rec = RawObservation(
+        archive_obs_id="mira-1", archive_url="http://example.test/mira1",
+        ra=200.0, dec=50.0, obs_date=date(2016, 1, 1),  # far across the sky from omicron Ceti
+        raw_target_name="Mira",
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["name_matched"] == 0
+    assert counts["skipped"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT gaia_source_id, match_status FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id='mira-1'"
+        )
+        gaia_id, status = cur.fetchone()
+    assert gaia_id is None
+    assert status == "skipped"
+
+
+def test_name_match_accepted_when_position_is_close(conn):
+    """Same alias collision risk as above, but this time the record's own
+    position genuinely is close to the named star — the sanity check must
+    not reject a real match.
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000081, 4.9, -3.0, name_aliases=["Mira", "omi Cet"])
+    conn.commit()
+
+    ra, dec = _offset(4.9, -3.0, 0.0, 5.0)  # 5" away — a real observation of the real star
+    rec = RawObservation(
+        archive_obs_id="mira-2", archive_url="http://example.test/mira2",
+        ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+        raw_target_name="Mira",
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["name_matched"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT gaia_source_id, match_status, match_method FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id='mira-2'"
+        )
+        gaia_id, status, method = cur.fetchone()
+    assert gaia_id == 900000000000000081
+    assert status == "matched"
+    assert method == "name_resolved"
+
+
 def test_positional_match_survives_prefilter_for_fast_proper_motion(conn):
     """A star with real (but sub-Barnard's-Star) proper motion should still
     match even though its un-propagated position is well outside the tight
