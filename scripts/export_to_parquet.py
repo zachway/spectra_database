@@ -189,39 +189,45 @@ LEADERBOARD_TOP_N = 10
 #     full 6.1M-star grid.
 LEADERBOARD_COUNTS_QUERY = """
 SELECT
-    gaia_source_id,
+    star_id,
     year(obs_date) AS yr,
     CASE WHEN month(obs_date) <= 6 THEN 1 ELSE 2 END AS half,
     count(*) AS n
 FROM pg.spectroscopy_holdings
-WHERE obs_date IS NOT NULL AND gaia_source_id IS NOT NULL
-GROUP BY gaia_source_id, yr, half
+WHERE obs_date IS NOT NULL AND star_id IS NOT NULL
+GROUP BY star_id, yr, half
 """
 
+# gaia_source_id (still a real, if no longer primary, column on stars -- see
+# db/schema.sql) is only resolved at the very end, via the join to pg.stars
+# below -- everything upstream (holdings, the grid, both top-N temp tables)
+# is keyed by star_id, since that's the only identifier every tracked star
+# has (a small number are BSC5-sourced with no gaia_source_id at all -- see
+# db/migrations/0001_star_id_surrogate_key.sql).
 LEADERBOARD_FINAL_QUERY = f"""
 WITH cast_stars AS (
-    SELECT gaia_source_id FROM leaderboard_top_period
+    SELECT star_id FROM leaderboard_top_period
     UNION
-    SELECT gaia_source_id FROM leaderboard_top_cum
+    SELECT star_id FROM leaderboard_top_cum
 ),
 periods AS (
     SELECT DISTINCT yr, half FROM leaderboard_counts
 ),
 grid AS (
-    SELECT cs.gaia_source_id, p.yr, p.half
+    SELECT cs.star_id, p.yr, p.half
     FROM cast_stars cs CROSS JOIN periods p
 )
 SELECT
-    g.gaia_source_id,
-    COALESCE(s.name_aliases[1], s.input_name, CAST(g.gaia_source_id AS VARCHAR)) AS label,
+    s.gaia_source_id,
+    COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS label,
     g.yr, g.half,
     tp.n AS within_n,
     tc.cum_n AS cumulative_n
 FROM grid g
-LEFT JOIN leaderboard_top_period tp USING (gaia_source_id, yr, half)
-LEFT JOIN leaderboard_top_cum tc USING (gaia_source_id, yr, half)
-JOIN pg.stars s ON s.gaia_source_id = g.gaia_source_id
-ORDER BY g.gaia_source_id, g.yr, g.half
+LEFT JOIN leaderboard_top_period tp USING (star_id, yr, half)
+LEFT JOIN leaderboard_top_cum tc USING (star_id, yr, half)
+JOIN pg.stars s ON s.star_id = g.star_id
+ORDER BY s.gaia_source_id, g.yr, g.half
 """
 
 
@@ -230,10 +236,10 @@ def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
 
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE leaderboard_top_period AS
-        SELECT gaia_source_id, yr, half, n
+        SELECT star_id, yr, half, n
         FROM (
             SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY yr, half ORDER BY n DESC, gaia_source_id
+                PARTITION BY yr, half ORDER BY n DESC, star_id
             ) AS period_rank
             FROM leaderboard_counts
         )
@@ -242,12 +248,12 @@ def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
 
     con.execute("""
         CREATE OR REPLACE TEMP TABLE leaderboard_cum_state (
-            gaia_source_id BIGINT PRIMARY KEY, cum_n BIGINT
+            star_id BIGINT PRIMARY KEY, cum_n BIGINT
         )
     """)
     con.execute("""
         CREATE OR REPLACE TEMP TABLE leaderboard_top_cum (
-            gaia_source_id BIGINT, yr INTEGER, half INTEGER, cum_n BIGINT
+            star_id BIGINT, yr INTEGER, half INTEGER, cum_n BIGINT
         )
     """)
     periods = con.execute(
@@ -256,10 +262,10 @@ def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
     for yr, half in periods:
         con.execute(
             """
-            INSERT INTO leaderboard_cum_state (gaia_source_id, cum_n)
-            SELECT gaia_source_id, n FROM leaderboard_counts
+            INSERT INTO leaderboard_cum_state (star_id, cum_n)
+            SELECT star_id, n FROM leaderboard_counts
             WHERE yr = ? AND half = ?
-            ON CONFLICT (gaia_source_id) DO UPDATE
+            ON CONFLICT (star_id) DO UPDATE
                 SET cum_n = leaderboard_cum_state.cum_n + excluded.cum_n
             """,
             [yr, half],
@@ -267,9 +273,9 @@ def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
         con.execute(
             f"""
             INSERT INTO leaderboard_top_cum
-            SELECT gaia_source_id, ?, ?, cum_n
+            SELECT star_id, ?, ?, cum_n
             FROM leaderboard_cum_state
-            ORDER BY cum_n DESC, gaia_source_id
+            ORDER BY cum_n DESC, star_id
             LIMIT {LEADERBOARD_TOP_N}
             """,
             [yr, half],
@@ -293,10 +299,10 @@ CMD_SAMPLE_SIZE = 30000
 
 CMD_STARS_QUERY = f"""
 WITH obs_counts AS (
-    SELECT gaia_source_id, count(*) AS n
+    SELECT star_id, count(*) AS n
     FROM pg.spectroscopy_holdings
-    WHERE gaia_source_id IS NOT NULL
-    GROUP BY gaia_source_id
+    WHERE star_id IS NOT NULL
+    GROUP BY star_id
 )
 SELECT
     s.gaia_source_id,
@@ -304,7 +310,7 @@ SELECT
     s.phot_g_mean_mag + 5 * log10(s.parallax) - 10 AS abs_g_mag,
     COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS label
 FROM pg.stars s
-JOIN obs_counts oc USING (gaia_source_id)
+JOIN obs_counts oc ON oc.star_id = s.star_id
 WHERE s.phot_bp_mean_mag IS NOT NULL AND s.phot_rp_mean_mag IS NOT NULL
   AND s.phot_g_mean_mag IS NOT NULL AND s.parallax > 0
 ORDER BY oc.n DESC
@@ -339,7 +345,7 @@ STATS_QUERIES = {
                COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS known_as,
                count(*) AS n
         FROM pg.spectroscopy_holdings h
-        JOIN pg.stars s ON s.gaia_source_id = h.gaia_source_id
+        JOIN pg.stars s ON s.star_id = h.star_id
         GROUP BY s.gaia_source_id, s.name_aliases, s.input_name
         ORDER BY n DESC
         LIMIT {MOST_OBSERVED_TOP_N}
@@ -349,7 +355,7 @@ STATS_QUERIES = {
                COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS known_as,
                count(*) AS n
         FROM pg.spectroscopy_holdings h
-        JOIN pg.stars s ON s.gaia_source_id = h.gaia_source_id
+        JOIN pg.stars s ON s.star_id = h.star_id
         WHERE h.obs_date >= CURRENT_DATE - INTERVAL '{TRENDING_YEARS}' YEAR
         GROUP BY s.gaia_source_id, s.name_aliases, s.input_name
         ORDER BY n DESC

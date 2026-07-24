@@ -213,22 +213,24 @@ def add_star(conn: psycopg.Connection, gaia_source_id: int, input_name: str | No
                 has_xp_continuous = EXCLUDED.has_xp_continuous,
                 input_name = COALESCE(EXCLUDED.input_name, stars.input_name),
                 name_aliases = EXCLUDED.name_aliases
+            RETURNING star_id
             """,
             star,
         )
+        star["star_id"] = cur.fetchone()[0]
 
         if star["has_rvs"]:
             cur.execute(
                 """
                 INSERT INTO spectroscopy_holdings
-                    (gaia_source_id, archive_code, archive_obs_id, archive_url,
+                    (star_id, archive_code, archive_obs_id, archive_url,
                      instrument, match_method, match_status)
-                VALUES (%(gaia_source_id)s, 'gaia_rvs', %(archive_obs_id)s, %(archive_url)s,
+                VALUES (%(star_id)s, 'gaia_rvs', %(archive_obs_id)s, %(archive_url)s,
                         'Gaia RVS', 'direct_gaia_column', 'matched')
                 ON CONFLICT (archive_code, archive_obs_id) DO NOTHING
                 """,
                 {
-                    "gaia_source_id": star["gaia_source_id"],
+                    "star_id": star["star_id"],
                     "archive_obs_id": str(star["gaia_source_id"]),
                     "archive_url": RVS_DEEP_LINK.format(source_id=star["gaia_source_id"]),
                 },
@@ -356,21 +358,23 @@ def add_stars_batch(
                                 || COALESCE(EXCLUDED.name_aliases, ARRAY[]::TEXT[])
                             )
                         )
+                    RETURNING star_id
                     """,
                     star,
                 )
+                star_id = cur.fetchone()[0]
                 if star["has_rvs"]:
                     cur.execute(
                         """
                         INSERT INTO spectroscopy_holdings
-                            (gaia_source_id, archive_code, archive_obs_id, archive_url,
+                            (star_id, archive_code, archive_obs_id, archive_url,
                              instrument, match_method, match_status)
-                        VALUES (%(gaia_source_id)s, 'gaia_rvs', %(archive_obs_id)s, %(archive_url)s,
+                        VALUES (%(star_id)s, 'gaia_rvs', %(archive_obs_id)s, %(archive_url)s,
                                 'Gaia RVS', 'direct_gaia_column', 'matched')
                         ON CONFLICT (archive_code, archive_obs_id) DO NOTHING
                         """,
                         {
-                            "gaia_source_id": star["gaia_source_id"],
+                            "star_id": star_id,
                             "archive_obs_id": str(star["gaia_source_id"]),
                             "archive_url": RVS_DEEP_LINK.format(source_id=star["gaia_source_id"]),
                         },

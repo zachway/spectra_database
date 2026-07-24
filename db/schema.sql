@@ -10,8 +10,20 @@
 -- https://github.com/segasai/q3c
 CREATE EXTENSION IF NOT EXISTS q3c;
 
+-- star_id is the internal surrogate PK. Most rows are Gaia-sourced
+-- (source_catalog='gaia', gaia_source_id populated) — that's still the
+-- primary identifier space everything else in this file assumes. A small
+-- number of naked-eye stars too bright for Gaia's detectors (it saturates
+-- around G~3; e.g. Arcturus has no Gaia source_id in any release) are
+-- instead sourced from the Yale Bright Star Catalogue (BSC5, source_catalog
+-- ='bsc5', bsc_hr_number populated instead). Exactly one of the two id
+-- columns is set, enforced below — nothing downstream should assume
+-- gaia_source_id is non-null.
 CREATE TABLE stars (
-    gaia_source_id      BIGINT PRIMARY KEY,
+    star_id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_catalog      TEXT NOT NULL DEFAULT 'gaia' CHECK (source_catalog IN ('gaia', 'bsc5')),
+    gaia_source_id      BIGINT UNIQUE,
+    bsc_hr_number       INTEGER UNIQUE,   -- Bright Star / Harvard Revised number, e.g. 5340 for Arcturus
     ra                  DOUBLE PRECISION NOT NULL,   -- deg, ICRS, at ref_epoch
     dec                 DOUBLE PRECISION NOT NULL,   -- deg, ICRS, at ref_epoch
     ref_epoch           DOUBLE PRECISION NOT NULL DEFAULT 2016.0,
@@ -35,7 +47,13 @@ CREATE TABLE stars (
     -- since Gaia's astrometric fit can be biased for binaries/crowded fields
     -- in ways that break pure positional matching even with correct PM.
     name_aliases         TEXT[],
-    added_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+    added_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CHECK (
+        (source_catalog = 'gaia' AND gaia_source_id IS NOT NULL AND bsc_hr_number IS NULL)
+        OR
+        (source_catalog = 'bsc5' AND bsc_hr_number IS NOT NULL AND gaia_source_id IS NULL)
+    )
 );
 
 -- Powers sync.matcher's positional-match candidate lookup (q3c_join against
@@ -71,13 +89,15 @@ CREATE TABLE archive_sync_state (
 );
 
 -- The core deliverable table: does spectroscopic data exist for this star in
--- this archive, and where. gaia_source_id is nullable so archive records that
+-- this archive, and where. star_id is nullable so archive records that
 -- can't yet be confidently tied to a tracked star still get a row instead of
 -- being silently dropped — they sit in needs_review until resolved (manually,
--- or once full LR-based matching is built).
+-- or once full LR-based matching is built). References stars.star_id (the
+-- surrogate PK), not gaia_source_id directly, since not every tracked star
+-- has one (see stars.source_catalog).
 CREATE TABLE spectroscopy_holdings (
     id                  BIGSERIAL PRIMARY KEY,
-    gaia_source_id      BIGINT REFERENCES stars(gaia_source_id),
+    star_id             BIGINT REFERENCES stars(star_id),
     archive_code        TEXT NOT NULL REFERENCES archives(archive_code),
     archive_obs_id      TEXT NOT NULL,   -- archive-native observation/dataset ID
     archive_url         TEXT NOT NULL,   -- deep link back to the archive's own UI
@@ -110,7 +130,7 @@ CREATE TABLE spectroscopy_holdings (
     UNIQUE (archive_code, archive_obs_id)
 );
 
-CREATE INDEX idx_holdings_gaia_source_id ON spectroscopy_holdings (gaia_source_id);
+CREATE INDEX idx_holdings_star_id ON spectroscopy_holdings (star_id);
 CREATE INDEX idx_holdings_archive_status ON spectroscopy_holdings (archive_code, match_status);
 CREATE INDEX idx_holdings_needs_review ON spectroscopy_holdings (archive_code) WHERE match_status = 'needs_review';
 
@@ -150,3 +170,115 @@ INSERT INTO archives (archive_code, display_name, access_mechanism, has_native_g
     ('ing',                     'ING Archive (WHT/ISIS)',            'html_form', FALSE, NULL, 'Implemented against casu.ast.cam.ac.uk/casuadc/ingarch (the old archive.ast.cam.ac.uk is dead) -- a TurboGears web form, no API. Metadata-only by design: bulk file retrieval only exists via a stateful, email-gated async job queue with no way to poll for completion (confirmed live) -- since every archive_url elsewhere in this project already just points at the source archive rather than downloading bytes, archive_url here points at displayHeader?recno=... instead, a real directly-fetchable page, same role the portal link plays for lbt.py. WHT/ISIS only (server-side instrument=ISIS filter, confirmed real substring filtering) -- WHT/ACAM and WHT/LIRIS are dual imaging/spectroscopy instruments with no mode field in the default columns to tell which is which, deliberately excluded. obs_type=TARGET filters out ARC/BIAS/FLAT/SKY calibration. No offset/watermark field exists at all -- paginated via an adaptive nightobs calendar-window walk (bisects on the archive''s own undocumented 1000-row display cap, grows back up after a successful pull) since window size needed varies hugely across ING''s ~40-year history.'),
     ('naoj',                    'NAOJ (Subaru HDS, via JVO)',        'tap',       FALSE, NULL, 'Not the SMOKA archive (still a dead end: registration-gated web wizard, no bulk API) -- implemented against a separate TAP+SSA service run by JVO (jvo.nao.ac.jp/skynode/do/tap/hds/sync) for Subaru''s High Dispersion Spectrograph, found via the reg.g-vo.org registry sweep. A custom JVOQL engine, not DaCHS -- SELECT * is unusable (a malformed access_estsize column declared int but emitting decimal strings crashes the VOTable parser, confirmed live), no instrument_name column (hardcoded to HDS, the table''s only instrument), COUNT(DISTINCT ...) silently ignored (confirmed live), 200,000-row server-side cap regardless of TOP/maxrec. 253,389 rows confirmed live, most raw_ids carrying several pipeline-product rows of the same exposure (fits + text/plain variants) -- deduped per-page by a product-rank preferring the fully-processed 1D fits product, same shape as mast_jwst.py''s per-obs_id ranking. Target name and wavelength range are packed together in obs_title ("NAME [lo:hi]"), parsed apart. No cliff found in TOP+ORDER BY t_mid pagination.'),
     ('oirsa',                   'OIRSA (CfA)',                      'tap',       FALSE, NULL, 'Implemented against a real TAP service at oirsa.cfa.harvard.edu:8080/tap (found via the reg.g-vo.org registry sweep) -- the archive''s own :443 web frontend is a stateful dojo/prototype.js search app with no scriptable API (confirmed live: its /search/* AJAX endpoints 404 for any non-browser client), entirely unrelated to this TAP service. ivoa.obscore unifies all four CfA instruments: FAST (132,452 rows), Hectospec (599,592), Hectochelle (393,267), Echelle (171,278) -- ~1.3M spectra confirmed live, pulled unfiltered since obs_collection is only populated for Echelle (not usable as a discriminator) -- instrument_name read per-row instead just to label each observation. Hectospec/Hectochelle target_name is a plate/configuration id, not a star name, but s_ra/s_dec are still genuine per-fiber target positions (confirmed live: rows sharing one target_name carry different positions, s_fov ~1.5 arcsec) -- positional matching still works even though names don''t resolve. access_url is already a direct per-row file link, no DataLink resolution needed. No cliff found in TOP+ORDER BY t_min pagination up to 50,000 rows/page, same shape as dao.py.');
+
+
+-- =============================================================================
+-- Crowdsourced triage for skipped spectroscopy_holdings rows (design sketch).
+--
+-- No automated heuristic in sync/matcher.py is trustworthy enough to resolve
+-- match_status = 'skipped' rows on its own (see the comment on that column
+-- above) -- these need a human to look at the raw name/position and a finder
+-- chart and pick one of a fixed set of outcomes. A single careless or
+-- bad-faith submission attaching the wrong gaia_source_id would be just as
+-- damaging as a bad automated heuristic, so submissions do NOT write
+-- directly to spectroscopy_holdings/stars. Instead they accumulate here, one
+-- row per independent submission, keyed to the holding by
+-- (archive_code, archive_obs_id) -- the same pair spectroscopy_holdings
+-- already uses as its own UNIQUE constraint -- rather than by `id`, so this
+-- table doesn't need to assume anything about spectroscopy_holdings' or
+-- stars' primary key shape (a separate, concurrent migration is adding
+-- alternate-catalog identifiers to `stars` for Gaia-absent bright stars like
+-- Arcturus -- see project notes -- and may change how stars are keyed).
+--
+-- Applying a submission (updating spectroscopy_holdings / calling
+-- ingest.add_star's add_star()/add_star_by_name()) only happens once a
+-- quorum of independent submissions agree -- see the TODO on the /triage
+-- routes in webapp/app.py for exactly where that stub lives. Left
+-- unimplemented here: this table only records raw submissions and whether/
+-- when one was applied.
+-- =============================================================================
+
+CREATE TABLE skip_classifications (
+    id                          BIGSERIAL PRIMARY KEY,
+
+    -- Which skipped holding this submission is about. Deliberately NOT a
+    -- foreign key to spectroscopy_holdings.id (a surrogate key this table
+    -- shouldn't need to know about) -- (archive_code, archive_obs_id) is the
+    -- natural key archive sync code already keys off everywhere else.
+    archive_code                TEXT NOT NULL,
+    archive_obs_id               TEXT NOT NULL,
+    FOREIGN KEY (archive_code, archive_obs_id)
+        REFERENCES spectroscopy_holdings (archive_code, archive_obs_id),
+
+    -- The three fixed outcomes from the crowdsourced-triage design -- NOT
+    -- free text, so submissions stay auditable/aggregable for the quorum step:
+    --   attach_gaia_source       -- contributor identified a real Gaia DR3
+    --                                source_id for this target (may or may
+    --                                not already be tracked in `stars` --
+    --                                applying this outcome should go through
+    --                                ingest.add_star.add_star(), which
+    --                                fetches-and-inserts on demand, see the
+    --                                TODO in webapp/app.py).
+    --   not_a_real_target         -- calibration frame, engineering exposure,
+    --                                non-stellar object, etc. Terminal --
+    --                                should stop resurfacing in the queue
+    --                                once applied.
+    --   confirmed_absent_from_gaia -- a genuine target that just isn't in
+    --                                Gaia at all (saturates at G~21, e.g.
+    --                                Arcturus). Requires a live Gaia cone
+    --                                search at submission time, not just the
+    --                                contributor's say-so -- see
+    --                                gaia_cone_search_result below.
+    outcome                      TEXT NOT NULL CHECK (outcome IN (
+                                     'attach_gaia_source',
+                                     'not_a_real_target',
+                                     'confirmed_absent_from_gaia'
+                                 )),
+
+    -- Required for, and only meaningful for, outcome = 'attach_gaia_source'.
+    proposed_gaia_source_id       BIGINT,
+    CHECK (
+        (outcome = 'attach_gaia_source') = (proposed_gaia_source_id IS NOT NULL)
+    ),
+
+    -- Required for, and only meaningful for, outcome = 'confirmed_absent_from_gaia'
+    -- -- a snapshot of the live Gaia TAP cone-search result the contributor
+    -- was shown before confirming (radius + a human-readable summary of what
+    -- came back: nothing, or only much-fainter spurious sources), so a later
+    -- reviewer/the quorum step doesn't have to trust an unverifiable claim or
+    -- re-run the query themselves. See the TODO in webapp/app.py for the
+    -- actual TAP call this should reuse (same pattern as
+    -- ingest.add_star.resolve_gaia_source_id's GAIA_CONE_QUERY fallback).
+    gaia_cone_search_radius_arcsec  REAL,
+    gaia_cone_search_result          TEXT,
+    CHECK (
+        (outcome = 'confirmed_absent_from_gaia') = (gaia_cone_search_result IS NOT NULL)
+    ),
+
+    -- No login/auth yet (out of scope for this sketch) -- a plain
+    -- self-reported name/handle, trusted at face value.
+    submitter                    TEXT NOT NULL,
+    note                          TEXT,   -- optional free-form context, not one of the fixed outcomes above
+
+    submitted_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- NULL until the (stubbed) quorum/apply step actually updates
+    -- spectroscopy_holdings / calls add_star() for this holding. Kept as a
+    -- plain nullable timestamp rather than a status enum since "applied or
+    -- not" is the only state this sketch needs -- see open design questions
+    -- (quorum size, tie-breaking, conflicting submissions) in the PR notes.
+    applied_at                   TIMESTAMPTZ
+);
+
+-- Powers both the /triage queue (which skipped holdings still need more
+-- submissions before quorum) and the stubbed apply step (tally distinct
+-- outcomes per holding among not-yet-applied submissions).
+CREATE INDEX idx_skip_classifications_holding
+    ON skip_classifications (archive_code, archive_obs_id);
+
+-- Lets a submitter be blocked from voting twice on the same holding rather
+-- than silently padding the same outcome -- a submitter changing their mind
+-- would need a new row anyway since there's no update path in this sketch
+-- (see open design questions).
+CREATE UNIQUE INDEX idx_skip_classifications_one_vote_per_submitter
+    ON skip_classifications (archive_code, archive_obs_id, submitter);
