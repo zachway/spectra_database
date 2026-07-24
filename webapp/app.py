@@ -46,6 +46,7 @@ MAX_NAME_LOOKUPS = 2000
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
     "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
+    "sky_sample",
 )
 
 
@@ -180,6 +181,15 @@ CMD_SAMPLE_SIZE = 30000
 # any charting library renders interactively without WebGL trouble. USING
 # SAMPLE applies after the WHERE filter, not before, so this is a sample of
 # valid points, not valid points among a sample of everything.
+#
+# Descriptive text only -- the actual sampling is precomputed by
+# scripts.export_to_parquet's SKY_SAMPLE_QUERY into sky_sample.parquet (same
+# "duplicated constant, just for the caption" pattern as CMD_SAMPLE_SIZE).
+# Used to be a live `USING SAMPLE n` against the full `stars` table on every
+# /sky request -- confirmed live as ~27s per request (DuckDB's remote-parquet
+# reader has to scan nearly the whole ~500MB+ file to sample from a 9.8M-row
+# table with no filter pushdown available), the dominant cost in "webapp is
+# sluggish switching tabs".
 SKY_SAMPLE_SIZE = 30000
 
 # Radial (cone) search by sky position, below the name search box. The
@@ -661,14 +671,7 @@ SKY_TEMPLATE = """
 @app.route("/sky")
 def sky():
     cur = get_cursor()
-    cur.execute(
-        f"""
-        SELECT gaia_source_id, ra, dec, phot_g_mean_mag, name_aliases, input_name
-        FROM stars
-        WHERE ra IS NOT NULL AND dec IS NOT NULL AND phot_g_mean_mag IS NOT NULL
-        USING SAMPLE {SKY_SAMPLE_SIZE}
-        """
-    )
+    cur.execute("SELECT gaia_source_id, ra, dec, phot_g_mean_mag, known_as FROM sky_sample")
     rows = _rows_as_dicts(cur)
     x, y = _aitoff_project([r["ra"] for r in rows], [r["dec"] for r in rows])
     # Brighter (lower mag) stars drawn bigger, clipped to a sane pixel range.
@@ -678,7 +681,7 @@ def sky():
         SKY_TEMPLATE,
         x=x, y=y, sizes=sizes,
         source_ids=[str(r["gaia_source_id"]) for r in rows],
-        labels=[_known_as(r) for r in rows],
+        labels=[r["known_as"] for r in rows],
         galactic_x=galactic_x, galactic_y=galactic_y,
         sample_size=SKY_SAMPLE_SIZE,
         active_tab="sky",
@@ -882,11 +885,15 @@ def timeplots():
             )
 
     # stats_summary is precomputed by scripts.export_to_parquet — most-
-    # observed, trending, total_holdings, by-archive and by-method all used
-    # to be separate live queries here, each scanning some or all of the
-    # ever-growing spectroscopy_holdings table on every request. See that
-    # module for the full reasoning (same OOM-shaped risk as the top-5-per-
-    # period selection above, just five smaller scans instead of one huge one).
+    # observed, trending, total_holdings, by-archive, by-method, nearest,
+    # fastest-movers and spectral-type-histogram all used to be separate live
+    # queries here, each scanning some or all of the ever-growing
+    # spectroscopy_holdings/stars tables on every request. See that module
+    # for the full reasoning (same OOM/full-scan-per-request risk as the
+    # top-5-per-period selection above; nearest/fastest-movers/spectral-types
+    # specifically confirmed live at multiple seconds each against `stars`
+    # over HTTP, since ORDER BY/GROUP BY over an unfiltered remote Parquet
+    # table can't skip any row groups).
     cur.execute("SELECT * FROM stats_summary")
     summary = _rows_as_dicts(cur)[0]
     most_observed = summary["most_observed"]
@@ -896,51 +903,10 @@ def timeplots():
     by_archive = summary["by_archive"]
     by_method = summary["by_method"]
     trending_years = summary["trending_years"]
+    nearest = summary["nearest"]
+    fastest_movers = summary["fastest_movers"]
 
-    cur.execute(
-        """
-        SELECT gaia_source_id, input_name, name_aliases, 1000.0 / parallax AS distance_pc
-        FROM stars
-        WHERE parallax > 0
-        ORDER BY parallax DESC
-        LIMIT 20
-        """
-    )
-    nearest = _rows_as_dicts(cur)
-    for r in nearest:
-        r["known_as"] = _known_as(r)
-
-    cur.execute(
-        """
-        SELECT gaia_source_id, input_name, name_aliases, sqrt(pmra * pmra + pmdec * pmdec) AS total_pm
-        FROM stars
-        WHERE pmra IS NOT NULL AND pmdec IS NOT NULL
-        ORDER BY total_pm DESC
-        LIMIT 20
-        """
-    )
-    fastest_movers = _rows_as_dicts(cur)
-    for r in fastest_movers:
-        r["known_as"] = _known_as(r)
-
-    cur.execute(
-        """
-        SELECT
-            CASE
-                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.0 THEN 'O/B (hot)'
-                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.3 THEN 'A'
-                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.6 THEN 'F'
-                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.9 THEN 'G'
-                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 1.5 THEN 'K'
-                ELSE 'M (cool)'
-            END AS bucket,
-            count(*) AS n
-        FROM stars
-        WHERE phot_bp_mean_mag IS NOT NULL AND phot_rp_mean_mag IS NOT NULL
-        GROUP BY bucket
-        """
-    )
-    counts_by_bucket = {r["bucket"]: r["n"] for r in _rows_as_dicts(cur)}
+    counts_by_bucket = {r["bucket"]: r["n"] for r in summary["spectral_types"]}
     max_bucket_n = max(counts_by_bucket.values()) if counts_by_bucket else 0
     spectral_types = [
         {

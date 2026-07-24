@@ -127,6 +127,24 @@ FROM sampled
 WHERE rn <= {INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT}
 """
 
+# Precomputed sample of all stars for the /sky all-sky map -- was a live
+# `USING SAMPLE n` against the full `stars` table on every page load, which
+# forces DuckDB's remote-parquet reader to scan nearly the whole ~500MB+
+# file over HTTP from joy every time (confirmed live: ~27s for a 5,000-row
+# sample against a 9.8M-row table, the dominant cost behind "webapp is
+# sluggish switching tabs"). Precomputed here where the SAMPLE only runs
+# once per export instead of once per tab click; must match webapp.app's
+# SKY_SAMPLE_SIZE constant.
+SKY_SAMPLE_SIZE = 30000
+
+SKY_SAMPLE_QUERY = f"""
+    SELECT gaia_source_id, ra, dec, phot_g_mean_mag,
+           COALESCE(name_aliases[1], input_name, CAST(gaia_source_id AS VARCHAR)) AS known_as
+    FROM pg.stars
+    WHERE ra IS NOT NULL AND dec IS NOT NULL AND phot_g_mean_mag IS NOT NULL
+    USING SAMPLE {SKY_SAMPLE_SIZE}
+"""
+
 LEADERBOARD_TOP_N = 10
 
 # Fully precomputed Leaderboard chart data — not just the raw per-(star,
@@ -294,20 +312,26 @@ LIMIT {CMD_SAMPLE_SIZE}
 """
 
 
-# /stats used to run five separate full (or near-full) scans of
-# spectroscopy_holdings per request -- most-observed, trending, a bare
-# count(*), by-archive, by-method -- against the same growing table
-# responsible for the Leaderboard's OOM. None of these involve a cross join
-# like the Leaderboard did, so each individually is a cheap single-pass
-# aggregation, but "cheap x5, every request, over an ever-growing table,
-# streamed over HTTP into a memory-capped container" adds up the same way.
+# /timeplots (the Leaderboard/Stats tab) used to run eight separate full (or
+# near-full) scans per request -- most-observed, trending, a bare count(*),
+# by-archive, by-method against spectroscopy_holdings, plus nearest,
+# fastest-movers and a spectral-type histogram against `stars` -- against the
+# same growing tables responsible for the Leaderboard's OOM. None of these
+# involve a cross join like the Leaderboard did, so each individually is a
+# cheap single-pass aggregation, but "cheap x8, every request, over
+# ever-growing tables, streamed over HTTP into a memory-capped container"
+# adds up the same way -- confirmed live: nearest/fastest-movers/spectral-
+# types each took multiple seconds against a 9.8M-row `stars` served over
+# plain HTTP, since ORDER BY/GROUP BY with no filter can't skip row groups.
 # Precomputed here as one small JSON blob instead — total_stars and
 # total_holdings are just scalars, and every list here is bounded (top-20,
-# or one row per archive/match-method, both small fixed sets) regardless of
-# how large the underlying tables get.
+# or one row per archive/match-method/spectral-bucket, all small fixed sets)
+# regardless of how large the underlying tables get.
 TRENDING_YEARS = 5
 MOST_OBSERVED_TOP_N = 20
 TRENDING_TOP_N = 20
+NEAREST_TOP_N = 20
+FASTEST_MOVERS_TOP_N = 20
 
 STATS_QUERIES = {
     "most_observed": f"""
@@ -344,6 +368,39 @@ STATS_QUERIES = {
         WHERE match_status = 'matched'
         GROUP BY match_method
         ORDER BY n DESC
+    """,
+    "nearest": f"""
+        SELECT gaia_source_id,
+               COALESCE(name_aliases[1], input_name, CAST(gaia_source_id AS VARCHAR)) AS known_as,
+               1000.0 / parallax AS distance_pc
+        FROM pg.stars
+        WHERE parallax > 0
+        ORDER BY parallax DESC
+        LIMIT {NEAREST_TOP_N}
+    """,
+    "fastest_movers": f"""
+        SELECT gaia_source_id,
+               COALESCE(name_aliases[1], input_name, CAST(gaia_source_id AS VARCHAR)) AS known_as,
+               sqrt(pmra * pmra + pmdec * pmdec) AS total_pm
+        FROM pg.stars
+        WHERE pmra IS NOT NULL AND pmdec IS NOT NULL
+        ORDER BY total_pm DESC
+        LIMIT {FASTEST_MOVERS_TOP_N}
+    """,
+    "spectral_types": """
+        SELECT
+            CASE
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.0 THEN 'O/B (hot)'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.3 THEN 'A'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.6 THEN 'F'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 0.9 THEN 'G'
+                WHEN phot_bp_mean_mag - phot_rp_mean_mag < 1.5 THEN 'K'
+                ELSE 'M (cool)'
+            END AS bucket,
+            count(*) AS n
+        FROM pg.stars
+        WHERE phot_bp_mean_mag IS NOT NULL AND phot_rp_mean_mag IS NOT NULL
+        GROUP BY bucket
     """,
 }
 
@@ -415,6 +472,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
         cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
         _atomic_copy(con, CMD_STARS_QUERY, cmd_stars_path)
         logger.info("exported cmd_stars -> %s", cmd_stars_path)
+
+        sky_sample_path = os.path.join(out_dir, "sky_sample.parquet")
+        _atomic_copy(con, SKY_SAMPLE_QUERY, sky_sample_path)
+        logger.info("exported sky_sample -> %s", sky_sample_path)
 
         archive_status_path = os.path.join(out_dir, "archive_status.parquet")
         _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
