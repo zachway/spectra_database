@@ -55,7 +55,9 @@ from sync.archives import (
     lick,
     mast,
     mast_jwst,
+    naoj,
     noirlab,
+    oirsa,
     rave,
     salt_hrs,
     sdss_legacy_optical,
@@ -99,6 +101,8 @@ ARCHIVES = {
     "sophie": sophie.fetch,
     "salt_hrs": salt_hrs.fetch,
     "ing": ing.fetch,
+    "naoj": naoj.fetch,
+    "oirsa": oirsa.fetch,
 }
 
 

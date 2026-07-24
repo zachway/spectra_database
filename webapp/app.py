@@ -847,8 +847,6 @@ ARCHIVE_STATUS_CATEGORIES = [
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
     ("CARMENES", "co-added template library (TAC)", "carmenes_caha.py covers per-observation raw spectra, both channels; the co-added templates are a separate product"),
-    ("—", "NAOJ (Subaru)", "no bulk query, only a fragile per-object lookup; not yet worth the build"),
-    ("—", "OIRSA (CfA)", "stateful session-driven search wizard, no documented API; more reverse-engineering than justified so far"),
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive; the one data endpoint is PI-login only"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
