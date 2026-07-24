@@ -10,11 +10,20 @@ the same table — each has its own `dataprod` column with a clean
 'spectrum'/'image'/'' split (confirmed live via DISTINCT), unlike pepsi
 which has no such column at all (imagetyp='object' does that job there
 instead). Not a uniform schema across instruments at all: mods/luci don't
-have pepsi's `ra`/`dec` columns either — see INSTRUMENTS below.
+have pepsi's `lbtra`/`lbtde` columns either — see INSTRUMENTS below.
 
-No ObsCore, no access_url column — ra/dec (where present) are sexagesimal
-strings (not decimal degrees, unlike every other TAP-based archive here),
-parsed via astropy.
+No ObsCore, no access_url column — position columns (where present) are
+sexagesimal strings (not decimal degrees, unlike every other TAP-based
+archive here), parsed via astropy.
+
+pepsi's own `ra`/`dec` columns looked like the obvious position field but
+are NOT usable as target position — confirmed live against production data:
+a consistent ~17-20 arcmin offset from every sampled target's true Gaia
+position, tight enough to be systematic (unlike a genuine mismatch or
+per-record archive glitch, which scatter far more randomly). `lbtra`/`lbtde`
+(also on this table) matches the true position to within 0.01-0.03 arcmin
+on the same sample and is used instead — same telescope-pointing role as
+luci's telra/teldec below, just under a different name on this table.
 
 mods has per-target objra/objdec, but only ~56% populated (confirmed live:
 1132/2000 spectrum rows) — the literal string 'none' is a real sentinel
@@ -91,8 +100,18 @@ GAIA_OBJECT_RE = re.compile(r"^Gaia\s+DR3\s+(\d+)$", re.IGNORECASE)
 # and spectroscopy, isolated via dataprod instead (confirmed live, neither
 # column exists on the other table). luci has no per-target position
 # column at all -- telra/teldec (telescope pointing) used as a stand-in.
+#
+# pepsi's own `ra`/`dec` columns are NOT usable as target position --
+# confirmed live (production data, 5/5 sampled) they sit a consistent
+# ~17-20 arcmin from the named target's real Gaia position, tight enough to
+# be systematic rather than random error, not the wide/scattered offsets a
+# genuine mismatch or per-record archive glitch shows elsewhere in this
+# project. `lbtra`/`lbtde` (present in the same table, presumably the
+# telescope's actual achieved pointing, same role as luci's telra/teldec)
+# matches the true position to within 0.01-0.03 arcmin on the same sample --
+# used here instead.
 INSTRUMENTS = {
-    "PEPSI": ("lbt.pepsi", "imagetyp", "object", "ra", "dec"),
+    "PEPSI": ("lbt.pepsi", "imagetyp", "object", "lbtra", "lbtde"),
     "MODS": ("lbt.mods", "dataprod", "spectrum", "objra", "objdec"),
     "LUCI": ("lbt.luci", "dataprod", "spectrum", "telra", "teldec"),
 }
