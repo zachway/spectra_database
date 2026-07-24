@@ -136,7 +136,14 @@ def _parse_coords(coords: str) -> tuple[float, float] | tuple[None, None]:
     if coords == ZERO_COORD:
         return None, None
     ra_str, dec_str = coords.split(" ", 1)
-    coord = SkyCoord(ra=ra_str, dec=dec_str, unit=(u.hourangle, u.deg))
+    try:
+        coord = SkyCoord(ra=ra_str, dec=dec_str, unit=(u.hourangle, u.deg))
+    except ValueError:
+        # A handful of engineering/focus-run frames carry a bad pointing
+        # (e.g. dec slightly over 90deg from tracking error) that astropy
+        # rejects outright -- treated as no-position rather than aborting
+        # the whole sync, same reasoning as the ZERO_COORD sentinel above.
+        return None, None
     return coord.ra.deg, coord.dec.deg
 
 
