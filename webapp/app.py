@@ -494,8 +494,16 @@ def search():
     raw_holdings = _rows_as_dicts(cur)
 
     if export_csv:
+        known_as = ", ".join(star["name_aliases"]) if star["name_aliases"] else star["input_name"]
+        for h in raw_holdings:
+            h["query"] = query
+            h["source_id"] = source_id
+            h["status"] = "tracked"
+            h["known_as"] = known_as
+            h["archive"] = h["display_name"]
         return _csv_response(
-            ["display_name", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
+            ["query", "source_id", "status", "known_as",
+             "archive", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
             raw_holdings,
             f"spectra_database_holdings_{source_id}.csv",
         )
