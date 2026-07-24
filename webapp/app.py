@@ -25,15 +25,17 @@ import csv
 import io
 import os
 from collections import defaultdict
+from urllib.parse import quote, urlencode
 
 import astropy.units as u
 import duckdb
 import numpy as np
+import psycopg
 from astropy.coordinates import SkyCoord
 from flask import Flask, Response, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
-from ingest.add_star import resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
+from ingest.add_star import _launch_gaia_job, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
 
 app = Flask(__name__)
 
@@ -267,6 +269,7 @@ NAV_HTML = """
     <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Leaderboard</a>
     <a href="/instruments" class="{{ 'active' if active_tab == 'instruments' else '' }}">Instruments</a>
     <a href="/status" class="{{ 'active' if active_tab == 'archive_status' else '' }}">Archive Status</a>
+    <a href="/triage" class="{{ 'active' if active_tab == 'triage' else '' }}">Triage</a>
     <a href="/info" class="{{ 'active' if active_tab == 'info' else '' }}">More Info</a>
     <a href="/citation" class="{{ 'active' if active_tab == 'citation' else '' }}">Citation</a>
   </nav>
@@ -486,10 +489,10 @@ def search():
         SELECT h.*, a.display_name
         FROM spectroscopy_holdings h
         JOIN archives a ON a.archive_code = h.archive_code
-        WHERE h.gaia_source_id = ?
+        WHERE h.star_id = ?
         ORDER BY a.display_name, h.instrument, h.obs_date
         """,
-        [source_id],
+        [star["star_id"]],
     )
     raw_holdings = _rows_as_dicts(cur)
 
@@ -1466,10 +1469,11 @@ def batch_search():
 
         cur.execute(
             """
-            SELECT gaia_source_id, COUNT(*) AS n
-            FROM spectroscopy_holdings
-            WHERE list_contains(?, gaia_source_id)
-            GROUP BY gaia_source_id
+            SELECT s.gaia_source_id, COUNT(*) AS n
+            FROM spectroscopy_holdings h
+            JOIN stars s ON s.star_id = h.star_id
+            WHERE list_contains(?, s.gaia_source_id)
+            GROUP BY s.gaia_source_id
             """,
             [all_source_ids],
         )
@@ -1509,12 +1513,13 @@ def batch_search():
         if all_source_ids:
             cur.execute(
                 """
-                SELECT h.gaia_source_id, a.display_name, h.instrument, h.obs_date,
+                SELECT s.gaia_source_id, a.display_name, h.instrument, h.obs_date,
                        h.match_status, h.match_method, h.archive_url
                 FROM spectroscopy_holdings h
+                JOIN stars s ON s.star_id = h.star_id
                 JOIN archives a ON a.archive_code = h.archive_code
-                WHERE list_contains(?, h.gaia_source_id)
-                ORDER BY h.gaia_source_id, a.display_name, h.instrument, h.obs_date
+                WHERE list_contains(?, s.gaia_source_id)
+                ORDER BY s.gaia_source_id, a.display_name, h.instrument, h.obs_date
                 """,
                 [all_source_ids],
             )
@@ -1554,6 +1559,390 @@ def batch_search():
         note += f" {truncated} additional name(s) beyond the {MAX_NAME_LOOKUPS} cap were skipped entirely."
 
     return _blank_batch(batch_error=batch_error, batch_note=note, batch_results=results)
+
+
+# =============================================================================
+# Crowdsourced triage for match_status = 'skipped' rows (design sketch).
+#
+# Every other route in this file only reads the DuckDB/Parquet snapshot (see
+# the module docstring) -- this is the app's first genuine write path.
+# Submitting a classification needs to land immediately in the real Postgres
+# database, not wait for the next scripts.export_to_parquet snapshot, so
+# these two routes open their own live psycopg connection via DATABASE_URL
+# instead of going through get_cursor(). DATABASE_URL is NOT set on the
+# hosted Cloud Run deployment today (see project deployment notes) -- wiring
+# up a writable path from the public web tier to Postgres (almost certainly
+# needing its own auth/rate-limiting, since there's no login for this app at
+# all yet) is an open deployment question this sketch does not resolve.
+# =============================================================================
+
+def _pg_connection() -> psycopg.Connection:
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is not set in this environment -- the /triage submission "
+            "routes need a live, writable Postgres connection, unlike every other "
+            "route in this app (see the comment above _pg_connection)."
+        )
+    return psycopg.connect(database_url)
+
+
+# Generous compared to ingest.add_star.resolve_gaia_source_id's 2" ambiguity-
+# check radius (see add_star.py:117-149) -- deliberately wide (10-30" per the
+# design notes) because a bright star's old catalog position, plus real high
+# proper motion, can leave real separation from the true Gaia-epoch position.
+# A human still reviews the actual result before confirming, so a wider
+# radius costs nothing but a few more candidate rows to look at.
+TRIAGE_CONE_SEARCH_RADIUS_ARCSEC = 20.0
+
+# Same TAP pattern as ingest.add_star's GAIA_CONE_QUERY (see add_star.py:70-77),
+# but also pulls phot_g_mean_mag and orders by it -- the design notes call for
+# showing the *actual* query result (nothing found, or only much-fainter
+# spurious sources), not just a count, so a contributor/reviewer can judge
+# "fainter" at a glance instead of re-querying Gaia themselves.
+TRIAGE_GAIA_CONE_QUERY = """
+SELECT source_id, phot_g_mean_mag
+FROM gaiadr3.gaia_source
+WHERE 1=CONTAINS(
+    POINT('ICRS', ra, dec),
+    CIRCLE('ICRS', {ra}, {dec}, {radius_deg})
+)
+ORDER BY phot_g_mean_mag ASC
+"""
+
+
+def _aladin_lite_url(ra: float, dec: float) -> str:
+    return f"https://aladin.cds.unistra.fr/AladinLite/?target={ra}%20{dec}&fov=0.2"
+
+
+def _simbad_coord_url(ra: float, dec: float) -> str:
+    return f"https://simbad.cds.unistra.fr/simbad/sim-coo?Coord={ra}+{dec}&Radius=2&Radius.unit=arcmin"
+
+
+TRIAGE_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Triage</title>
+  <style>""" + SHARED_STYLE + """
+    .triage-row { border: 1px solid #000; padding: 0.6rem 0.8rem; margin-top: 1rem; }
+    .triage-row form { margin-top: 0.5rem; }
+    .triage-row label { display: block; margin: 0.2rem 0; }
+    .triage-row input[type=text] { font-family: monospace; }
+    .finder-links a { margin-right: 1rem; }
+    .prior-submissions { font-style: italic; }
+    .cone-result { display: block; margin: 0.2rem 0 0.2rem 1.4rem; }
+  </style>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <h2>Triage: skipped records</h2>
+  <p class="note">
+    These are spectroscopy_holdings rows with match_status = 'skipped' -- the
+    automated matcher (see <a href="/info">More Info</a>) found no name or
+    positional candidate at all for them. Submissions below do <b>not</b>
+    update the database directly: they accumulate as independent votes in a
+    new skip_classifications table, and only get applied once a quorum of
+    contributors agree (design sketch -- the apply step is a documented stub
+    in webapp/app.py, not wired up yet).
+  </p>
+
+  {% if error %}
+    <p class="error">Error: {{ error }}</p>
+  {% endif %}
+  {% if note %}
+    <p class="note">{{ note }}</p>
+  {% endif %}
+  {% if pg_error %}
+    <p class="note">Live prior-submission counts unavailable ({{ pg_error }}) -- showing the skipped queue without them.</p>
+  {% endif %}
+
+  {% for r in rows %}
+  <div class="triage-row">
+    <p>
+      <b>{{ r.display_name }}</b> —
+      {{ r.raw_target_name or "(no reported name)" }}
+      {% if r.raw_ra is not none and r.raw_dec is not none %}
+        at RA {{ "%.5f"|format(r.raw_ra) }}, Dec {{ "%.5f"|format(r.raw_dec) }}
+      {% else %}
+        (no reported position)
+      {% endif %}
+      {% if r.obs_date %} — {{ r.obs_date }}{% endif %}
+      {% if r.instrument %} — {{ r.instrument }}{% endif %}
+      — <a href="{{ r.archive_url }}" target="_blank" rel="noopener">archive record</a>
+    </p>
+
+    {% if r.aladin_url %}
+    <p class="finder-links">
+      <a href="{{ r.aladin_url }}" target="_blank" rel="noopener">Aladin Lite finder chart</a>
+      <a href="{{ r.simbad_url }}" target="_blank" rel="noopener">SIMBAD at this position</a>
+    </p>
+    {% endif %}
+
+    {% if r.prior_submissions %}
+    <p class="prior-submissions">{{ r.prior_submissions|length }} prior submission{{ "s" if r.prior_submissions|length != 1 else "" }} (not yet applied):
+      {% for s in r.prior_submissions %}{{ s.outcome }} ({{ s.submitter }}){% if not loop.last %}; {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+
+    <form method="post" action="/triage/submit">
+      <input type="hidden" name="archive_code" value="{{ r.archive_code }}">
+      <input type="hidden" name="archive_obs_id" value="{{ r.archive_obs_id }}">
+
+      <label><input type="radio" name="outcome" value="attach_gaia_source" required>
+        Attach to Gaia source:
+        <input type="text" name="gaia_target" placeholder="Gaia source_id or star name" size="28">
+      </label>
+
+      <label><input type="radio" name="outcome" value="not_a_real_target">
+        Confirmed — not a real target (calibration frame, engineering exposure, non-stellar)
+      </label>
+
+      <label>
+        <input type="radio" name="outcome" value="confirmed_absent_from_gaia" {% if not r.aladin_url %}disabled{% endif %}>
+        Confirmed — real target, genuinely absent from Gaia
+        {% if r.aladin_url %}
+          (<a href="{{ r.cone_search_url }}">run live {{ '%g'|format(triage_cone_search_radius) }}&Prime; Gaia cone search to confirm</a>)
+        {% endif %}
+      </label>
+      {% if r.cone_search_result %}
+        <span class="cone-result note">Cone search result: {{ r.cone_search_result }}</span>
+        <input type="hidden" name="gaia_cone_search_result" value="{{ r.cone_search_result }}">
+        <input type="hidden" name="gaia_cone_search_radius_arcsec" value="{{ triage_cone_search_radius }}">
+      {% endif %}
+
+      <label>Submitter name/handle: <input type="text" name="submitter" required size="24"></label>
+      <label>Note (optional): <input type="text" name="note" size="40"></label>
+      <button type="submit">Submit classification</button>
+    </form>
+  </div>
+  {% endfor %}
+  {% if not rows %}<p>No skipped records right now.</p>{% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/triage")
+def triage():
+    cur = get_cursor()
+    cur.execute(
+        """
+        SELECT h.archive_code, a.display_name, h.archive_obs_id, h.archive_url,
+               h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.instrument
+        FROM spectroscopy_holdings h
+        JOIN archives a ON a.archive_code = h.archive_code
+        WHERE h.match_status = 'skipped'
+        ORDER BY h.updated_at DESC
+        LIMIT 20
+        """
+    )
+    rows = _rows_as_dicts(cur)
+
+    # Cone-search preview, if the contributor just clicked "run live cone
+    # search" for one specific row below (see /triage/cone_search) -- carried
+    # over via a redirect query string (no JS/session state in this sketch).
+    preview_key = (request.args.get("preview_archive_code", ""), request.args.get("preview_archive_obs_id", ""))
+    preview_result = request.args.get("preview_result", "")
+
+    # Existing (not-yet-applied) submissions, so a contributor can see this
+    # row already has other independent votes before adding their own -- read
+    # live from Postgres, since skip_classifications isn't part of the
+    # DuckDB/Parquet snapshot (see _pg_connection's comment above). Degrades
+    # gracefully if DATABASE_URL isn't configured in this environment, same
+    # as the SIMBAD-outage handling elsewhere in this file.
+    submissions_by_holding = defaultdict(list)
+    pg_error = None
+    try:
+        with _pg_connection() as pg_conn, pg_conn.cursor() as pg_cur:
+            pg_cur.execute(
+                """
+                SELECT archive_code, archive_obs_id, outcome, submitter, submitted_at
+                FROM skip_classifications
+                WHERE applied_at IS NULL
+                ORDER BY submitted_at DESC
+                """
+            )
+            cols = [d.name for d in pg_cur.description]
+            for row in pg_cur.fetchall():
+                d = dict(zip(cols, row))
+                submissions_by_holding[(d["archive_code"], d["archive_obs_id"])].append(d)
+    except Exception as exc:
+        pg_error = str(exc)
+
+    for r in rows:
+        key = (r["archive_code"], r["archive_obs_id"])
+        r["prior_submissions"] = submissions_by_holding.get(key, [])
+        if r["raw_ra"] is not None and r["raw_dec"] is not None:
+            r["aladin_url"] = _aladin_lite_url(r["raw_ra"], r["raw_dec"])
+            r["simbad_url"] = _simbad_coord_url(r["raw_ra"], r["raw_dec"])
+            r["cone_search_url"] = "/triage/cone_search?" + urlencode({
+                "archive_code": r["archive_code"],
+                "archive_obs_id": r["archive_obs_id"],
+                "ra": r["raw_ra"],
+                "dec": r["raw_dec"],
+            })
+            r["cone_search_result"] = preview_result if key == preview_key else None
+        else:
+            r["aladin_url"] = None
+            r["cone_search_result"] = None
+
+    return render_template_string(
+        TRIAGE_TEMPLATE, active_tab="triage", rows=rows,
+        error=request.args.get("error"), note=request.args.get("note"),
+        pg_error=pg_error, triage_cone_search_radius=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC,
+    )
+
+
+@app.route("/triage/cone_search")
+def triage_cone_search():
+    """Live Gaia DR3 cone search for one skipped row -- the gate the design
+    notes require before "confirmed absent from Gaia" can be submitted at
+    all: a human can't reliably eyeball non-detection (Gaia goes to G~21,
+    crowding/saturation effects are easy to misjudge), so this runs the real
+    query and hands the actual result back rather than taking anyone's word.
+    """
+    archive_code = request.args.get("archive_code", "")
+    archive_obs_id = request.args.get("archive_obs_id", "")
+    try:
+        ra = float(request.args.get("ra", ""))
+        dec = float(request.args.get("dec", ""))
+    except ValueError:
+        return redirect("/triage?error=" + quote("Missing/invalid position for cone search."))
+
+    try:
+        job = _launch_gaia_job(
+            TRIAGE_GAIA_CONE_QUERY.format(ra=ra, dec=dec, radius_deg=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC / 3600)
+        )
+        table = job.get_results()
+    except Exception as exc:
+        return redirect("/triage?error=" + quote(f"Gaia cone search failed: {exc}"))
+
+    if len(table) == 0:
+        summary = f"0 Gaia DR3 sources found within {TRIAGE_CONE_SEARCH_RADIUS_ARCSEC:g}\" of ({ra:.5f}, {dec:.5f})."
+    else:
+        shown = [f"{int(row['source_id'])} (G={row['phot_g_mean_mag']:.1f})" for row in table[:10]]
+        summary = f"{len(table)} Gaia DR3 source(s) found within {TRIAGE_CONE_SEARCH_RADIUS_ARCSEC:g}\": " + ", ".join(shown)
+        if len(table) > 10:
+            summary += f", … ({len(table) - 10} more, faintest first excluded)"
+
+    return redirect("/triage?" + urlencode({
+        "preview_archive_code": archive_code,
+        "preview_archive_obs_id": archive_obs_id,
+        "preview_result": summary,
+    }))
+
+
+@app.route("/triage/submit", methods=["POST"])
+def triage_submit():
+    archive_code = request.form.get("archive_code", "").strip()
+    archive_obs_id = request.form.get("archive_obs_id", "").strip()
+    outcome = request.form.get("outcome", "").strip()
+    submitter = request.form.get("submitter", "").strip()
+    note = request.form.get("note", "").strip() or None
+
+    if not archive_code or not archive_obs_id or not submitter:
+        return redirect("/triage?error=" + quote("archive_code, archive_obs_id, and submitter are all required."))
+
+    proposed_gaia_source_id = None
+    cone_radius = None
+    cone_result = None
+
+    if outcome == "attach_gaia_source":
+        target = request.form.get("gaia_target", "").strip()
+        if not target:
+            return redirect("/triage?error=" + quote("Enter a Gaia source_id or star name to attach."))
+        if target.isdigit():
+            proposed_gaia_source_id = int(target)
+        else:
+            # Reuses ingest.add_star.resolve_gaia_source_id (already imported
+            # above, add_star.py:117-149) -- SIMBAD-first, tight-radius Gaia
+            # cone-search fallback, the same resolution path add_star_by_name()
+            # uses. Deliberately NOT restricted to already-tracked stars: any
+            # real Gaia DR3 source_id should be attachable here, and add_star()
+            # (see the apply-step TODO below) is what fetches-and-inserts a
+            # not-yet-tracked star on demand.
+            try:
+                proposed_gaia_source_id = resolve_gaia_source_id(target)
+            except (ValueError, DALServiceError) as exc:
+                return redirect("/triage?error=" + quote(f"Could not resolve {target!r}: {exc}"))
+
+    elif outcome == "confirmed_absent_from_gaia":
+        cone_result = request.form.get("gaia_cone_search_result", "").strip()
+        radius_raw = request.form.get("gaia_cone_search_radius_arcsec", "").strip()
+        if not cone_result or not radius_raw:
+            return redirect("/triage?error=" + quote(
+                "Run the live Gaia cone-search preview for this row before confirming it's absent from Gaia."
+            ))
+        cone_radius = float(radius_raw)
+
+    elif outcome != "not_a_real_target":
+        return redirect("/triage?error=" + quote("Unrecognized outcome."))
+
+    try:
+        with _pg_connection() as pg_conn, pg_conn.cursor() as pg_cur:
+            pg_cur.execute(
+                """
+                INSERT INTO skip_classifications
+                    (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
+                     gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
+                 cone_radius, cone_result, submitter, note),
+            )
+    except psycopg.errors.UniqueViolation:
+        return redirect("/triage?error=" + quote(f"{submitter!r} has already submitted a classification for this row."))
+    except psycopg.errors.ForeignKeyViolation:
+        return redirect("/triage?error=" + quote("That holding no longer exists, or isn't in the skipped queue."))
+    except RuntimeError as exc:
+        return redirect("/triage?error=" + quote(str(exc)))
+
+    return redirect("/triage?note=" + quote("Submission recorded — thank you."))
+
+
+def _apply_skip_classification_if_quorum(pg_conn: psycopg.Connection, archive_code: str, archive_obs_id: str, quorum: int = 2) -> None:
+    """Design stub -- NOT called by any route yet. Sketching the intended
+    consensus step so it's clear what's deferred and why, per the crowdsourced-
+    triage design notes.
+
+    Intended logic once wired up (e.g. inline right after triage_submit()
+    records a new row, or from a small periodic job): tally this holding's
+    not-yet-applied skip_classifications rows grouped by outcome; if any one
+    outcome has >= `quorum` independent submitters agreeing:
+      - attach_gaia_source: call ingest.add_star.add_star(pg_conn,
+        proposed_gaia_source_id, input_name=...) (see add_star.py:188) to
+        fetch-and-track the star if it isn't already tracked, then UPDATE the
+        matching spectroscopy_holdings row to that star with
+        match_status='matched', match_method='manual'.
+      - not_a_real_target: UPDATE spectroscopy_holdings.match_status =
+        'rejected' (already a valid value in the match_status CHECK
+        constraint -- see db/schema.sql).
+      - confirmed_absent_from_gaia: no spectroscopy_holdings change (there's
+        genuinely no gaia_source_id/star to assign) -- just mark applied so
+        the row stops resurfacing in the /triage queue. May eventually want
+        its own terminal handling once the separate BSC/alternate-identifier
+        migration (in flight concurrently, see project notes) lands and a
+        star row can exist without a gaia_source_id at all -- out of scope
+        here.
+      - Mark every skip_classifications row for this holding applied_at =
+        now(), not just the winning outcome's rows, so disagreeing/minority
+        submissions don't linger as "pending" forever once a decision is made.
+
+    Open design questions this stub deliberately leaves unresolved:
+      - Exact quorum size (2 above is a placeholder) -- should it scale with
+        total submission count, or require a margin over the runner-up
+        outcome rather than a flat count?
+      - What happens if two different outcomes both individually reach quorum
+        (shouldn't happen if one-vote-per-submitter holds and quorum requires
+        genuine agreement, but worth a real tie-break rule before this goes
+        live, not just an assumption)?
+      - Should a submitter ever be able to revise their own vote? Currently
+        blocked outright by db/schema.sql's one-vote-per-submitter unique
+        index -- deliberate for this sketch, but worth revisiting.
+    """
+    raise NotImplementedError("apply/quorum step is a design stub -- see docstring, not wired up yet")
 
 
 if __name__ == "__main__":

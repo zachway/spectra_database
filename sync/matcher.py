@@ -106,7 +106,7 @@ def _load_candidate_stars(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DISTINCT s.gaia_source_id, s.ra, s.dec, s.ref_epoch, s.pmra, s.pmdec
+            SELECT DISTINCT s.star_id, s.ra, s.dec, s.ref_epoch, s.pmra, s.pmdec
             FROM stars s, unnest(%(target_ra)s::float8[], %(target_dec)s::float8[]) AS t(ra, dec)
             WHERE q3c_join(t.ra, t.dec, s.ra, s.dec, %(radius_deg)s)
             """,
@@ -116,27 +116,27 @@ def _load_candidate_stars(
 
 
 def _load_star_aliases(conn: psycopg.Connection) -> tuple[dict[str, int], dict[int, tuple]]:
-    """Normalized alias -> gaia_source_id, for identifier matching, plus each
+    """Normalized alias -> star_id, for identifier matching, plus each
     aliased star's own (ra, dec, ref_epoch, pmra, pmdec) for the name-match
     sanity check in match_records — no separate query needed since every
     star with an alias already comes back in this same row.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, name_aliases, ra, dec, ref_epoch, pmra, pmdec "
+            "SELECT star_id, name_aliases, ra, dec, ref_epoch, pmra, pmdec "
             "FROM stars WHERE name_aliases IS NOT NULL"
         )
         rows = cur.fetchall()
     lookup: dict[str, int] = {}
     positions: dict[int, tuple] = {}
-    for gaia_source_id, aliases, ra, dec, ref_epoch, pmra, pmdec in rows:
-        positions[gaia_source_id] = (ra, dec, ref_epoch, pmra, pmdec)
+    for star_id, aliases, ra, dec, ref_epoch, pmra, pmdec in rows:
+        positions[star_id] = (ra, dec, ref_epoch, pmra, pmdec)
         for alias in aliases or []:
-            lookup[_normalize_name(alias)] = gaia_source_id
+            lookup[_normalize_name(alias)] = star_id
     return lookup, positions
 
 
-def _name_match_plausible(gaia_id: int, star_positions: dict[int, tuple], r: RawObservation) -> bool:
+def _name_match_plausible(star_id: int, star_positions: dict[int, tuple], r: RawObservation) -> bool:
     """False if a name-matched record's own reported position sits farther
     than NAME_MATCH_SANITY_RADIUS_ARCSEC from the star its name resolved to
     — see module docstring's "Mira" case. True (trust the name match, as
@@ -144,11 +144,11 @@ def _name_match_plausible(gaia_id: int, star_positions: dict[int, tuple], r: Raw
     """
     if r.ra is None or r.dec is None or r.obs_date is None or not (-90.0 <= r.dec <= 90.0):
         return True
-    star_row = star_positions.get(gaia_id)
+    star_row = star_positions.get(star_id)
     if star_row is None:
         return True
     ra, dec, ref_epoch, pmra, pmdec = star_row
-    _, propagated = _propagate([(gaia_id, ra, dec, ref_epoch, pmra, pmdec)], _to_jyear(r.obs_date))
+    _, propagated = _propagate([(star_id, ra, dec, ref_epoch, pmra, pmdec)], _to_jyear(r.obs_date))
     target = SkyCoord(ra=r.ra * u.deg, dec=r.dec * u.deg)
     return propagated[0].separation(target).arcsec <= NAME_MATCH_SANITY_RADIUS_ARCSEC
 
@@ -181,7 +181,7 @@ def _upsert_holding(
     cur: psycopg.Cursor,
     archive_code: str,
     rec: RawObservation,
-    gaia_source_id: int | None,
+    star_id: int | None,
     match_method: str,
     match_status: str,
     theta_arcsec: float | None,
@@ -189,14 +189,14 @@ def _upsert_holding(
     cur.execute(
         """
         INSERT INTO spectroscopy_holdings
-            (gaia_source_id, archive_code, archive_obs_id, archive_url, instrument,
+            (star_id, archive_code, archive_obs_id, archive_url, instrument,
              obs_date, program_id, match_method, match_status, theta_arcsec,
              raw_target_name, raw_ra, raw_dec, updated_at)
-        VALUES (%(gaia_source_id)s, %(archive_code)s, %(archive_obs_id)s, %(archive_url)s,
+        VALUES (%(star_id)s, %(archive_code)s, %(archive_obs_id)s, %(archive_url)s,
                 %(instrument)s, %(obs_date)s, %(program_id)s, %(match_method)s, %(match_status)s,
                 %(theta_arcsec)s, %(raw_target_name)s, %(raw_ra)s, %(raw_dec)s, now())
         ON CONFLICT (archive_code, archive_obs_id) DO UPDATE SET
-            gaia_source_id = EXCLUDED.gaia_source_id,
+            star_id = EXCLUDED.star_id,
             archive_url = EXCLUDED.archive_url,
             instrument = EXCLUDED.instrument,
             obs_date = EXCLUDED.obs_date,
@@ -210,7 +210,7 @@ def _upsert_holding(
             updated_at = now()
         """,
         {
-            "gaia_source_id": gaia_source_id,
+            "star_id": star_id,
             "archive_code": archive_code,
             "archive_obs_id": rec.archive_obs_id,
             "archive_url": rec.archive_url,
@@ -235,18 +235,19 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
 
     with conn.cursor() as cur:
         for r in direct:
-            cur.execute("SELECT 1 FROM stars WHERE gaia_source_id = %s", (r.gaia_source_id,))
-            if cur.fetchone() is None:
+            cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (r.gaia_source_id,))
+            row = cur.fetchone()
+            if row is None:
                 # Not a match failure on our end — the archive reports a
                 # Gaia source_id that doesn't exist in Gaia DR3 itself (a
                 # stale/incorrect ID on the archive's side), confirmed by
                 # discover_stars already having tried and failed to add it
-                # earlier in this same run. gaia_source_id must be NULL
-                # here (FK), same as needs_review.
+                # earlier in this same run. star_id must be NULL here (FK),
+                # same as needs_review.
                 _upsert_holding(cur, archive_code, r, None, "direct_gaia_column", "skipped", None)
                 counts["skipped"] += 1
                 continue
-            _upsert_holding(cur, archive_code, r, r.gaia_source_id, "direct_gaia_column", "matched", None)
+            _upsert_holding(cur, archive_code, r, row[0], "direct_gaia_column", "matched", None)
             counts["direct_matched"] += 1
     conn.commit()
 
@@ -265,12 +266,12 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
     name_match_rejected: set[int] = set()
     with conn.cursor() as cur:
         for r in no_gaia_column:
-            gaia_id = alias_lookup.get(_normalize_name(r.raw_target_name)) if r.raw_target_name else None
-            if gaia_id is not None and _name_match_plausible(gaia_id, star_positions, r):
-                _upsert_holding(cur, archive_code, r, gaia_id, "name_resolved", "matched", None)
+            star_id = alias_lookup.get(_normalize_name(r.raw_target_name)) if r.raw_target_name else None
+            if star_id is not None and _name_match_plausible(star_id, star_positions, r):
+                _upsert_holding(cur, archive_code, r, star_id, "name_resolved", "matched", None)
                 counts["name_matched"] += 1
             else:
-                if gaia_id is not None:
+                if star_id is not None:
                     name_match_rejected.add(id(r))
                 positional.append(r)
     conn.commit()
@@ -332,8 +333,8 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
                     _upsert_holding(cur, archive_code, r, None, "positional_easy_match", status, None)
                     counts[status] += 1
                 elif len(cands) == 1:
-                    gaia_id, theta = cands[0]
-                    _upsert_holding(cur, archive_code, r, gaia_id, "positional_easy_match", "matched", float(theta))
+                    star_id, theta = cands[0]
+                    _upsert_holding(cur, archive_code, r, star_id, "positional_easy_match", "matched", float(theta))
                     counts["positional_matched"] += 1
                 else:
                     best_theta = min(c[1] for c in cands)

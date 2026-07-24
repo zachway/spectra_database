@@ -48,6 +48,14 @@ def test_direct_gaia_column_match(conn):
     assert method == "direct_gaia_column"
 
 
+# Every query below joins spectroscopy_holdings.star_id back to
+# stars.gaia_source_id (LEFT JOIN, since a skipped/needs_review holding's
+# star_id is NULL) so tests can keep asserting against the same literal
+# Gaia-like test IDs _insert_star uses, rather than the internal surrogate
+# star_id — see db/migrations/0001_star_id_surrogate_key.sql for why
+# spectroscopy_holdings no longer stores gaia_source_id directly.
+
+
 def test_direct_gaia_column_skips_untracked_star(conn):
     rec = RawObservation(
         archive_obs_id="direct-2", archive_url="http://example.test/2", gaia_source_id=999999999999999999
@@ -59,8 +67,9 @@ def test_direct_gaia_column_skips_untracked_star(conn):
     # that id), raw report kept for later review/crowd-sourcing.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_status, match_method FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='direct-2'"
+            "SELECT s.gaia_source_id, h.match_status, h.match_method FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='direct-2'"
         )
         gaia_id, status, method = cur.fetchone()
     assert gaia_id is None
@@ -83,8 +92,9 @@ def test_positional_single_match(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_status, theta_arcsec FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='pos-1'"
+            "SELECT s.gaia_source_id, h.match_status, h.theta_arcsec FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='pos-1'"
         )
         gaia_id, status, theta = cur.fetchone()
     assert gaia_id == 900000000000000010
@@ -110,8 +120,9 @@ def test_positional_ambiguous_needs_review(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_status FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='pos-2'"
+            "SELECT s.gaia_source_id, h.match_status FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='pos-2'"
         )
         gaia_id, status = cur.fetchone()
     assert gaia_id is None
@@ -129,8 +140,9 @@ def test_positional_no_candidate_skipped(conn):
     # Persisted with the raw reported position, not discarded.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_status, raw_ra, raw_dec FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='pos-3'"
+            "SELECT s.gaia_source_id, h.match_status, h.raw_ra, h.raw_dec FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='pos-3'"
         )
         gaia_id, status, raw_ra, raw_dec = cur.fetchone()
     assert gaia_id is None
@@ -178,8 +190,9 @@ def test_name_resolved_beats_missing_positional_match(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_method, match_status, theta_arcsec FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='name-1'"
+            "SELECT s.gaia_source_id, h.match_method, h.match_status, h.theta_arcsec FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='name-1'"
         )
         gaia_id, method, status, theta = cur.fetchone()
     assert gaia_id == 900000000000000040
@@ -233,8 +246,9 @@ def test_name_match_rejected_when_position_is_far_off(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_status FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='mira-1'"
+            "SELECT s.gaia_source_id, h.match_status FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='mira-1'"
         )
         gaia_id, status = cur.fetchone()
     assert gaia_id is None
@@ -277,8 +291,9 @@ def test_name_match_accepted_when_position_is_close(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_status, match_method FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='mira-2'"
+            "SELECT s.gaia_source_id, h.match_status, h.match_method FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='mira-2'"
         )
         gaia_id, status, method = cur.fetchone()
     assert gaia_id == 900000000000000081
@@ -329,8 +344,9 @@ def test_positional_match_survives_prefilter_for_fast_proper_motion(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='pm-1'"
+            "SELECT s.gaia_source_id FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='pm-1'"
         )
         gaia_id = cur.fetchone()[0]
     assert gaia_id == 900000000000000060
@@ -366,8 +382,9 @@ def test_bogus_sentinel_dec_does_not_crash(conn):
     # rest of the epoch group's matching, not about hiding the bad record.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT gaia_source_id, match_status FROM spectroscopy_holdings "
-            "WHERE archive_code='unit_test' AND archive_obs_id='sentinel-2'"
+            "SELECT s.gaia_source_id, h.match_status FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='sentinel-2'"
         )
         gaia_id, status = cur.fetchone()
     assert gaia_id is None

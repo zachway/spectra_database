@@ -92,7 +92,7 @@ def reconcile(conn: psycopg.Connection, name_filter: str | None = None) -> dict:
 
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT archive_obs_id, gaia_source_id FROM spectroscopy_holdings "
+                    "SELECT archive_obs_id, star_id FROM spectroscopy_holdings "
                     "WHERE archive_code = %s AND archive_obs_id = ANY(%s)",
                     (archive_code, obs_ids),
                 )
@@ -102,17 +102,17 @@ def reconcile(conn: psycopg.Connection, name_filter: str | None = None) -> dict:
 
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT archive_obs_id, gaia_source_id, match_method, match_status FROM spectroscopy_holdings "
+                    "SELECT archive_obs_id, star_id, match_method, match_status FROM spectroscopy_holdings "
                     "WHERE archive_code = %s AND archive_obs_id = ANY(%s)",
                     (archive_code, obs_ids),
                 )
                 after = cur.fetchall()
 
             reassigned = [row for row in after if before.get(row[0]) != row[1]]
-            for archive_obs_id, gaia_source_id, method, status in reassigned:
+            for archive_obs_id, star_id, method, status in reassigned:
                 logger.info(
-                    "%s/%s: gaia_source_id %s -> %s (now %s/%s)",
-                    archive_code, archive_obs_id, before.get(archive_obs_id), gaia_source_id, method, status,
+                    "%s/%s: star_id %s -> %s (now %s/%s)",
+                    archive_code, archive_obs_id, before.get(archive_obs_id), star_id, method, status,
                 )
 
             totals["candidates"] += len(chunk)
