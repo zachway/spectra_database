@@ -47,6 +47,7 @@ from sync.archives import (
     gemini_ghost,
     gemini_igrins,
     harpsn_tng,
+    ing,
     koa,
     lamost,
     lbt,
@@ -93,6 +94,7 @@ ARCHIVES = {
     "elodie": elodie.fetch,
     "sophie": sophie.fetch,
     "salt_hrs": salt_hrs.fetch,
+    "ing": ing.fetch,
 }
 
 
