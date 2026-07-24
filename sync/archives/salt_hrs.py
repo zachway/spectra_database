@@ -65,6 +65,8 @@ number/numeric string fails ("date/time field value out of range" or
 an ISO string like "1970-01-01T00:00:00.000Z" works.
 """
 
+from __future__ import annotations
+
 import json
 from datetime import date, datetime, timezone
 
