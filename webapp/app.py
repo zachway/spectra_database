@@ -1100,8 +1100,6 @@ ARCHIVE_STATUS_CATEGORIES = [
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
     ("CARMENES", "co-added template library (TAC)", "carmenes_caha.py covers per-observation raw spectra, both channels; the co-added templates are a separate product"),
-    ("—", "NAOJ (Subaru HDS, via JVO)", "real TAP endpoint found via the IVOA Registry (~253k spectra) -- confirmed tractable, not yet implemented"),
-    ("—", "OIRSA (CfA)", "real TAP endpoint found via the IVOA Registry (~1.3M spectra across FAST/Hectospec/Hectochelle/Echelle) -- confirmed tractable, not yet implemented"),
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive; the one data endpoint is PI-login only"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
