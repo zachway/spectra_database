@@ -53,8 +53,15 @@ FROM gaiadr3.gaia_source
 WHERE source_id = {source_id}
 """
 
+# Explicit TOP is required, not cosmetic: astroquery's TapPlus.launch_job
+# unconditionally runs every sync query through set_top_in_query, which
+# injects "TOP 2000" into any query that doesn't already declare one --
+# confirmed by reading astroquery.utils.tap.taputils directly (not
+# documented). Without this, a chunk larger than 2000 rows (anything above
+# the old BATCH_CHUNK_SIZE of 500) would have its results silently
+# truncated to 2000, dropping the rest with no error raised.
 GAIA_BATCH_QUERY = """
-SELECT source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
+SELECT TOP {top} source_id, ra, dec, ref_epoch, pmra, pmdec, parallax,
        phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag, has_rvs, has_xp_continuous
 FROM gaiadr3.gaia_source
 WHERE source_id IN ({id_list})
@@ -236,7 +243,15 @@ def add_star_by_name(conn: psycopg.Connection, name: str) -> dict:
     return add_star(conn, gaia_source_id, input_name=name)
 
 
-BATCH_CHUNK_SIZE = 500
+# Larger than it looks necessary: each chunk is one Gaia.launch_job round
+# trip, and Gaia's TAP+ endpoint starts erroring after ~10 back-to-back
+# queries in a short window (see _launch_gaia_job's docstring). A
+# high-volume archive like LAMOST discovers ~10,000 new stars per page, so
+# at chunk sizes of a few hundred that's enough launches per page to walk
+# straight into that wall. 5000 keeps a single page under ~2 launches
+# instead of ~20, at the cost of a longer (but still well within any POST
+# body limit) query string per call.
+BATCH_CHUNK_SIZE = 5000
 
 
 def add_stars_batch(
@@ -260,18 +275,51 @@ def add_stars_batch(
     different physical instrument — e.g. the finder/acquisition camera —
     and can be off by arcminutes even when the name is correct). Merges with
     any aliases already cached rather than overwriting. Returns the number
-    of stars actually inserted/updated.
+    of stars actually inserted (not merely touched — a star we already have
+    full Gaia astrometry for is skipped from the Gaia round trip entirely,
+    see below, and doesn't count here even if it picks up a new alias).
+
+    Stars already present in `stars` skip the Gaia call altogether -- a
+    high-repeat archive (e.g. LAMOST re-observing the same targets across
+    plates/nights) would otherwise re-fetch astrometry that can't have
+    changed. They still get any new alias from this batch merged in
+    directly, without spending a Gaia round trip on it.
     """
     unique_ids = sorted(set(gaia_source_ids))
     if not unique_ids:
         return 0
     known_aliases = known_aliases or {}
 
+    with conn.cursor() as cur:
+        cur.execute("SELECT gaia_source_id FROM stars WHERE gaia_source_id = ANY(%s)", (unique_ids,))
+        already_known = {row[0] for row in cur.fetchall()}
+
+    if already_known:
+        with conn.cursor() as cur:
+            for sid in sorted(already_known):
+                aliases = known_aliases.get(sid)
+                if not aliases:
+                    continue
+                cur.execute(
+                    """
+                    UPDATE stars SET name_aliases = ARRAY(
+                        SELECT DISTINCT UNNEST(
+                            COALESCE(name_aliases, ARRAY[]::TEXT[]) || %(aliases)s::TEXT[]
+                        )
+                    )
+                    WHERE gaia_source_id = %(gaia_source_id)s
+                    """,
+                    {"gaia_source_id": sid, "aliases": aliases},
+                )
+        conn.commit()
+
+    new_ids = [sid for sid in unique_ids if sid not in already_known]
+
     total = 0
-    for i in range(0, len(unique_ids), BATCH_CHUNK_SIZE):
-        chunk = unique_ids[i : i + BATCH_CHUNK_SIZE]
+    for i in range(0, len(new_ids), BATCH_CHUNK_SIZE):
+        chunk = new_ids[i : i + BATCH_CHUNK_SIZE]
         id_list = ",".join(str(sid) for sid in chunk)
-        job = _launch_gaia_job(GAIA_BATCH_QUERY.format(id_list=id_list))
+        job = _launch_gaia_job(GAIA_BATCH_QUERY.format(top=len(chunk), id_list=id_list))
         table = job.get_results()
 
         with conn.cursor() as cur:
