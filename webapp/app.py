@@ -847,19 +847,13 @@ ARCHIVE_STATUS_CATEGORIES = [
 # both when a gap gets closed. (archive display_name, what's missing, why)
 NOT_YET_TRACKED = [
     ("CARMENES", "co-added template library (TAC)", "carmenes_caha.py covers per-observation raw spectra, both channels; the co-added templates are a separate product"),
-    ("—", "NAOJ (Subaru)", "no bulk query, only a fragile per-object lookup; not yet worth the build"),
-    ("—", "OIRSA (CfA)", "stateful session-driven search wizard, no documented API; more reverse-engineering than justified so far"),
+    ("—", "NAOJ (Subaru HDS, via JVO)", "real TAP endpoint found via the IVOA Registry (~253k spectra) -- confirmed tractable, not yet implemented"),
+    ("—", "OIRSA (CfA)", "real TAP endpoint found via the IVOA Registry (~1.3M spectra across FAST/Hectospec/Hectochelle/Echelle) -- confirmed tractable, not yet implemented"),
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive; the one data endpoint is PI-login only"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
-    ("—", "HARPS-N / TNG (IA2 archive)", "not yet investigated"),
-    ("—", "ELODIE (OHP)", "not yet investigated; documented per-object query API, looks tractable"),
-    ("—", "SOPHIE (OHP)", "not yet investigated; documented query interface, looks tractable"),
     ("—", "GTC (Gran Telescopio Canarias, Spain)", "not yet investigated; TAP endpoint 403s without a proper session"),
-    ("—", "Asiago Observatory (Italy, IA2)", "not yet investigated"),
-    ("—", "ING Archive (WHT/INT/JKT, La Palma)", "not yet investigated; looks like a web form, not a TAP/API"),
     ("—", "BeSS (Be Star Spectra, France)", "not yet investigated; only a web query form found, no confirmed API"),
-    ("—", "SALT HRS (SAAO)", "not yet investigated; no bulk/TAP access confirmed yet"),
     ("—", "IAO Hanle (India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these"),
 ]
 
