@@ -32,11 +32,13 @@ import sys
 import psycopg
 
 from sync.archives import (
+    asiago,
     carmenes,
     carmenes_caha,
     cfht_cadc,
     dao,
     desi,
+    elodie,
     eso,
     feros_gavo,
     flashheros_gavo,
@@ -44,6 +46,7 @@ from sync.archives import (
     gemini,
     gemini_ghost,
     gemini_igrins,
+    harpsn_tng,
     koa,
     lamost,
     lbt,
@@ -51,9 +54,11 @@ from sync.archives import (
     mast,
     noirlab,
     rave,
+    salt_hrs,
     sdss_legacy_optical,
     sdss_v_apogee,
     sdss_v_optical,
+    sophie,
 )
 from sync.runner import run_sync
 
@@ -83,6 +88,11 @@ ARCHIVES = {
     "desi": desi.fetch,
     "feros_gavo": feros_gavo.fetch,
     "flashheros_gavo": flashheros_gavo.fetch,
+    "asiago": asiago.fetch,
+    "harpsn_tng": harpsn_tng.fetch,
+    "elodie": elodie.fetch,
+    "sophie": sophie.fetch,
+    "salt_hrs": salt_hrs.fetch,
 }
 
 
