@@ -346,7 +346,7 @@ STATS_QUERIES = {
                count(*) AS n
         FROM pg.spectroscopy_holdings h
         JOIN pg.stars s ON s.star_id = h.star_id
-        GROUP BY s.gaia_source_id, s.name_aliases, s.input_name
+        GROUP BY s.star_id, s.gaia_source_id, s.name_aliases, s.input_name
         ORDER BY n DESC
         LIMIT {MOST_OBSERVED_TOP_N}
     """,
@@ -357,7 +357,7 @@ STATS_QUERIES = {
         FROM pg.spectroscopy_holdings h
         JOIN pg.stars s ON s.star_id = h.star_id
         WHERE h.obs_date >= CURRENT_DATE - INTERVAL '{TRENDING_YEARS}' YEAR
-        GROUP BY s.gaia_source_id, s.name_aliases, s.input_name
+        GROUP BY s.star_id, s.gaia_source_id, s.name_aliases, s.input_name
         ORDER BY n DESC
         LIMIT {TRENDING_TOP_N}
     """,

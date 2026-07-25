@@ -33,7 +33,16 @@ ALTER TABLE stars
 --    with `SELECT count(*) FROM stars WHERE star_id IS NULL;` -> 0 before
 --    proceeding).
 
--- 3. Swap primary keys: drop the old gaia_source_id PK, make it a plain
+-- 3. spectroscopy_holdings.gaia_source_id_fkey depends on stars_pkey's
+--    underlying index (it's the thing being referenced) -- must be dropped
+--    before stars_pkey, not after. Confirmed live: doing this in the
+--    original order the other way round throws "cannot drop constraint
+--    stars_pkey ... because other objects depend on it" and aborts the
+--    transaction (harmlessly -- BEGIN/COMMIT means nothing was left
+--    half-applied, but it never got past this step on the first attempt).
+ALTER TABLE spectroscopy_holdings DROP CONSTRAINT spectroscopy_holdings_gaia_source_id_fkey;
+
+-- 4. Swap primary keys: drop the old gaia_source_id PK, make it a plain
 --    UNIQUE + nullable column instead, promote star_id to PK.
 ALTER TABLE stars DROP CONSTRAINT stars_pkey;
 ALTER TABLE stars ALTER COLUMN gaia_source_id DROP NOT NULL;
@@ -48,8 +57,8 @@ ALTER TABLE stars ADD CONSTRAINT source_catalog_id_consistency CHECK (
     (source_catalog = 'bsc5' AND bsc_hr_number IS NOT NULL AND gaia_source_id IS NULL)
 );
 
--- 4. spectroscopy_holdings: add star_id, backfill from the existing
---    gaia_source_id join, then swap the FK over.
+-- 5. spectroscopy_holdings: add star_id, backfill from the existing
+--    gaia_source_id join, then point the FK at it instead.
 ALTER TABLE spectroscopy_holdings ADD COLUMN star_id BIGINT;
 
 UPDATE spectroscopy_holdings h
@@ -63,30 +72,25 @@ WHERE h.gaia_source_id = s.gaia_source_id;
 --   WHERE gaia_source_id IS NOT NULL AND star_id IS NULL;
 -- must return 0.
 
-ALTER TABLE spectroscopy_holdings DROP CONSTRAINT spectroscopy_holdings_gaia_source_id_fkey;
 ALTER TABLE spectroscopy_holdings ADD CONSTRAINT spectroscopy_holdings_star_id_fkey
     FOREIGN KEY (star_id) REFERENCES stars(star_id);
+
+-- Dropping gaia_source_id below also drops idx_holdings_gaia_source_id
+-- automatically (Postgres cascades that for any index defined solely on a
+-- dropped column) -- confirmed live: an explicit DROP INDEX afterward
+-- errors with "index does not exist" since it's already gone by then.
 ALTER TABLE spectroscopy_holdings DROP COLUMN gaia_source_id;
 
-DROP INDEX idx_holdings_gaia_source_id;
 CREATE INDEX idx_holdings_star_id ON spectroscopy_holdings (star_id);
 
 COMMIT;
 
--- Not included here, needs to land alongside this migration in application
--- code before it's safe to run against production:
---   - sync/matcher.py: every _upsert_holding call and its INSERT/UPDATE
---     statement currently keys on gaia_source_id directly.
---   - ingest/add_star.py: add_star/add_stars_batch INSERT ... ON CONFLICT
---     (gaia_source_id) target and the RVS holding insert.
---   - webapp/app.py: every route that queries/joins/displays
---     spectroscopy_holdings.gaia_source_id (search, batch, info, sky,
---     timeplots, instruments, stats) needs to join through star_id ->
---     stars.gaia_source_id, and each also needs a display fallback for
---     source_catalog='bsc5' rows that have no gaia_source_id at all.
---   - scripts/reconcile_name_matches.py, scripts/reprocess_skipped.py,
---     scripts/export_to_parquet.py: same column rename.
---   - tests/test_matcher.py: fixture data and assertions.
--- A BSC5 ingest path (analogous to add_star_by_name, but resolving via HR
--- number / VizieR V/50 instead of the Gaia archive) also doesn't exist yet
--- -- this migration only makes room in the schema for it.
+-- Application code (sync/matcher.py, ingest/add_star.py, webapp/app.py,
+-- scripts/reconcile_name_matches.py, scripts/export_to_parquet.py,
+-- tests/test_matcher.py) already updated to match this schema in the same
+-- PR that added this migration -- deploy that code right after this
+-- migration lands, not before (it assumes star_id exists) and not long
+-- after (old code assumes gaia_source_id is still on spectroscopy_holdings).
+-- Still not built: an actual BSC5 ingest path (analogous to
+-- add_star_by_name, but resolving via HR number / VizieR V/50 instead of
+-- the Gaia archive) -- this migration only makes room in the schema for it.
