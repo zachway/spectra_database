@@ -39,7 +39,18 @@ WHERE source_id IN ({id_list})
 
 def backfill(conn: psycopg.Connection) -> int:
     with conn.cursor() as cur:
-        cur.execute("SELECT gaia_source_id FROM stars WHERE phot_bp_mean_mag IS NULL AND phot_rp_mean_mag IS NULL")
+        # gaia_source_id IS NOT NULL matters now, not just cosmetically:
+        # BSC5-sourced stars (source_catalog='bsc5') have no Gaia photometry
+        # by design, so both columns are permanently NULL for them -- without
+        # this filter they'd match the WHERE clause every run, and once one
+        # lands in a chunk, str(None) becomes the literal text "None" in the
+        # id_list below, a syntax error in the ADQL sent to Gaia's own TAP
+        # service that fails the whole chunk (confirmed live: 70 BSC5 rows
+        # exist in production as of 2026-07-25, so this isn't hypothetical).
+        cur.execute(
+            "SELECT gaia_source_id FROM stars "
+            "WHERE gaia_source_id IS NOT NULL AND phot_bp_mean_mag IS NULL AND phot_rp_mean_mag IS NULL"
+        )
         pending = [row[0] for row in cur.fetchall()]
 
     logger.info("%d stars missing bp/rp", len(pending))
