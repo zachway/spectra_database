@@ -1853,7 +1853,7 @@ def triage():
         SELECT archive_code, display_name, group_key, raw_target_name, n_records,
                archive_obs_ids, archive_urls, raw_ra, raw_dec, obs_date, instrument, updated_at
         FROM triage_queue
-        ORDER BY updated_at DESC
+        ORDER BY (raw_target_name IS NOT NULL) DESC, updated_at DESC
         LIMIT 20
         """
     )

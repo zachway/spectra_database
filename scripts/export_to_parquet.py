@@ -464,7 +464,14 @@ SELECT
     any_value(instrument) AS instrument
 FROM ranked
 GROUP BY archive_code, display_name, group_key
-ORDER BY updated_at DESC
+-- Named groups first, recency as the tiebreaker within each bucket -- a
+-- human can actually look a reported name up and make a judgment call,
+-- unlike an anonymous calibration-frame/no-name record, so named groups are
+-- higher-value to surface. This ordering determines the LIMIT selection
+-- itself, not just display order -- otherwise a burst of recent nameless
+-- activity (e.g. a big LAMOST MRS sync) could crowd every named group out
+-- of the top {TRIAGE_QUEUE_TOP_N} entirely before webapp.app ever sees them.
+ORDER BY (raw_target_name IS NOT NULL) DESC, updated_at DESC
 LIMIT {TRIAGE_QUEUE_TOP_N}
 """
 
