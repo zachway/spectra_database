@@ -1605,9 +1605,9 @@ TRIAGE_TEMPLATE = """
   </style>
 </head>
 <body>
-  <img class="mood-image" src="/static/triage_mood.jpg" alt="how the triage queue feels sometimes">
   <h1>Spectra Database</h1>""" + NAV_HTML + """
   <h2>Triage: skipped records</h2>
+  <img class="mood-image" src="/static/triage_mood.jpg" alt="how the triage queue feels sometimes">
   <p class="note">
     These are spectroscopy_holdings rows with match_status = 'skipped' -- the
     automated matcher (see <a href="/info">More Info</a>) found no name or
