@@ -48,7 +48,7 @@ MAX_NAME_LOOKUPS = 2000
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
     "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
-    "sky_sample",
+    "sky_sample", "triage_queue",
 )
 
 
@@ -1643,11 +1643,11 @@ TRIAGE_TEMPLATE = """
       {% endif %}
       {% if r.obs_date %} — earliest {{ r.obs_date }}{% endif %}
       {% if r.instrument %} — {{ r.instrument }}{% endif %}
-      — {{ r.n_records }} record{{ "s" if r.n_records != 1 else "" }} in this recent batch
+      — {{ r.n_records }} record{{ "s" if r.n_records != 1 else "" }}
     </p>
 
     <details class="record-list">
-      <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name (this recent batch only, not a lifetime total)</summary>
+      <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name</summary>
       {% for oid, url in r.records %}<a href="{{ url }}" target="_blank" rel="noopener">{{ oid }}</a>{% endfor %}
       {% if r.records_truncated %}<span class="note">…and more (showing first {{ r.records|length }})</span>{% endif %}
     </details>
@@ -1667,7 +1667,11 @@ TRIAGE_TEMPLATE = """
 
     <form method="post" action="/triage/submit">
       <input type="hidden" name="archive_code" value="{{ r.archive_code }}">
-      {% for oid in r.archive_obs_ids %}<input type="hidden" name="archive_obs_ids" value="{{ oid }}">{% endfor %}
+      {% if r.raw_target_name %}
+        <input type="hidden" name="raw_target_name" value="{{ r.raw_target_name }}">
+      {% else %}
+        <input type="hidden" name="archive_obs_id" value="{{ r.archive_obs_ids[0] }}">
+      {% endif %}
 
       <label><input type="radio" name="outcome" value="attach_gaia_source" required>
         Attach to Gaia source:
@@ -1703,77 +1707,33 @@ TRIAGE_TEMPLATE = """
 """
 
 
-# How many of the most-recently-updated skipped rows to pull before grouping
-# by identifier -- see the comment in triage() for why this can't just be a
-# SQL GROUP BY over the whole table.
-TRIAGE_WINDOW_SIZE = 5000
-
-# How many underlying records to actually list (as links) per identifier
-# group in the rendered page -- independent of TRIAGE_WINDOW_SIZE, just a
-# sane cap on how much a <details> block should ever try to render.
-TRIAGE_MAX_RECORDS_SHOWN = 50
-
-
 @app.route("/triage")
 def triage():
     cur = get_cursor()
-    # Deliberately NOT `GROUP BY archive_code, raw_target_name` over the
-    # whole spectroscopy_holdings table here -- measured directly against the
-    # production Parquet snapshot, that OOMs the 1 GiB Cloud Run container
-    # even with only cheap scalar aggregates (no list()): the skipped set is
-    # 12M+ rows across 900K+ distinct names, and DuckDB has to hold one
-    # accumulator per distinct group until the whole input is consumed. This
-    # instead reuses the plain, cheap, already-proven-safe
-    # ORDER BY updated_at DESC LIMIT query (same shape as before this
-    # feature existed, just a wider window) and groups only that bounded
-    # window in Python below. Trade-off: "N records" reflects how many of
-    # this identifier's records fall within the recent window, not a
-    # lifetime total -- consistent with the page only ever having shown the
-    # most-recently-touched rows to begin with.
+    # Reads the precomputed triage_queue table (see
+    # scripts/export_to_parquet.py's TRIAGE_QUEUE_QUERY) rather than grouping
+    # spectroscopy_holdings live -- a true GROUP BY (archive_code,
+    # raw_target_name) over the full skipped set (12M+ rows, 900K+ distinct
+    # names) OOMs the 1 GiB Cloud Run container, confirmed live against
+    # production. Precomputing where memory isn't capped also means this can
+    # be a cheap, small read instead of a multi-second remote scan on every
+    # page load -- this project tries to keep Cloud Run request time (and
+    # therefore cost) down wherever the data doesn't need to be live-fresh,
+    # and a "run the export by hand every so often" cadence is already how
+    # every other derived page here works.
     cur.execute(
         """
-        SELECT h.archive_code, a.display_name, h.archive_obs_id, h.archive_url,
-               h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.instrument, h.updated_at
-        FROM spectroscopy_holdings h
-        JOIN archives a ON a.archive_code = h.archive_code
-        WHERE h.match_status = 'skipped'
-        ORDER BY h.updated_at DESC
-        LIMIT ?
-        """,
-        [TRIAGE_WINDOW_SIZE],
+        SELECT archive_code, display_name, group_key, raw_target_name, n_records,
+               archive_obs_ids, archive_urls, raw_ra, raw_dec, obs_date, instrument, updated_at
+        FROM triage_queue
+        ORDER BY updated_at DESC
+        LIMIT 20
+        """
     )
-    window_rows = _rows_as_dicts(cur)
-
-    groups: dict[tuple[str, str], dict] = {}
-    for row in window_rows:
-        name = (row["raw_target_name"] or "").strip()
-        group_key = name if name else f"obs:{row['archive_obs_id']}"
-        gkey = (row["archive_code"], group_key)
-        g = groups.get(gkey)
-        if g is None:
-            g = groups[gkey] = {
-                "archive_code": row["archive_code"],
-                "display_name": row["display_name"],
-                "group_key": group_key,
-                "raw_target_name": name or None,
-                "n_records": 0,
-                "records": [],
-                "archive_obs_ids": [],
-                "raw_ra": row["raw_ra"],
-                "raw_dec": row["raw_dec"],
-                "obs_date": row["obs_date"],
-                "instrument": row["instrument"],
-                "updated_at": row["updated_at"],
-            }
-        g["n_records"] += 1
-        g["records"].append((row["archive_obs_id"], row["archive_url"]))
-        g["archive_obs_ids"].append(row["archive_obs_id"])
-        if row["updated_at"] > g["updated_at"]:
-            g["updated_at"] = row["updated_at"]
-        if row["obs_date"] and (not g["obs_date"] or row["obs_date"] < g["obs_date"]):
-            g["obs_date"] = row["obs_date"]
-
-    rows = sorted(groups.values(), key=lambda g: g["updated_at"], reverse=True)[:20]
+    rows = _rows_as_dicts(cur)
+    for r in rows:
+        r["records"] = list(zip(r["archive_obs_ids"] or [], r["archive_urls"] or []))
+        r["records_truncated"] = r["n_records"] > len(r["records"])
 
     # Cone-search preview, if the contributor just clicked "run live cone
     # search" for one identifier group below (see /triage/cone_search) --
@@ -1811,8 +1771,6 @@ def triage():
 
     for r in rows:
         key = (r["archive_code"], r["group_key"])
-        r["records_truncated"] = r["n_records"] > TRIAGE_MAX_RECORDS_SHOWN
-        r["records"] = r["records"][:TRIAGE_MAX_RECORDS_SHOWN]
         r["prior_submissions"] = [
             s
             for oid in r["archive_obs_ids"]
@@ -1882,13 +1840,20 @@ def triage_cone_search():
 @app.route("/triage/submit", methods=["POST"])
 def triage_submit():
     archive_code = request.form.get("archive_code", "").strip()
-    archive_obs_ids = [x.strip() for x in request.form.getlist("archive_obs_ids") if x.strip()]
+    # Exactly one of these is set, depending on which branch of the form's
+    # {% if r.raw_target_name %} the row rendered (see TRIAGE_TEMPLATE):
+    # named groups vote by name (applies to every currently-skipped record
+    # under that name, not just the up-to-50 sampled into triage_queue for
+    # display -- see the INSERT...SELECT below); nameless groups are always
+    # a single specific record, voted on directly by archive_obs_id.
+    raw_target_name = request.form.get("raw_target_name", "").strip()
+    archive_obs_id = request.form.get("archive_obs_id", "").strip()
     outcome = request.form.get("outcome", "").strip()
     submitter = request.form.get("submitter", "").strip()
     note = request.form.get("note", "").strip() or None
 
-    if not archive_code or not archive_obs_ids or not submitter:
-        return redirect("/triage?error=" + quote("archive_code, archive_obs_ids, and submitter are all required."))
+    if not archive_code or not (raw_target_name or archive_obs_id) or not submitter:
+        return redirect("/triage?error=" + quote("archive_code, a target identifier, and submitter are all required."))
 
     proposed_gaia_source_id = None
     cone_radius = None
@@ -1927,15 +1892,34 @@ def triage_submit():
 
     try:
         with _pg_connection() as pg_conn, pg_conn.cursor() as pg_cur:
-            # One skip_classifications row per underlying archive_obs_id --
-            # the table's natural key stays per-record (see its schema
-            # comment), grouping by identifier is purely a triage-page
-            # presentation choice. ON CONFLICT DO NOTHING so a submitter who
-            # already voted on some of these records (e.g. from an earlier,
-            # differently-sized group) still gets their vote recorded for the
-            # rest, instead of the whole submission failing outright.
-            n_inserted = 0
-            for archive_obs_id in archive_obs_ids:
+            # skip_classifications' natural key stays per-record (see its
+            # schema comment) -- grouping by identifier is purely a
+            # triage-page presentation choice. For a named group this
+            # INSERT...SELECT records one vote against every record the
+            # *live* Postgres spectroscopy_holdings table currently has
+            # under that (archive_code, name) and still marked 'skipped' --
+            # not just the up-to-50 sampled into triage_queue for display,
+            # so a vote on a huge group (e.g. a calibration-frame name with
+            # hundreds of hits) still covers all of it. ON CONFLICT DO
+            # NOTHING so a submitter who already voted on some of these
+            # records still gets their vote recorded for the rest, instead
+            # of the whole submission failing outright.
+            if raw_target_name:
+                pg_cur.execute(
+                    """
+                    INSERT INTO skip_classifications
+                        (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
+                         gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note)
+                    SELECT h.archive_code, h.archive_obs_id, %s, %s, %s, %s, %s, %s
+                    FROM spectroscopy_holdings h
+                    WHERE h.archive_code = %s AND h.match_status = 'skipped'
+                      AND NULLIF(TRIM(h.raw_target_name), '') = %s
+                    ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
+                    """,
+                    (outcome, proposed_gaia_source_id, cone_radius, cone_result, submitter, note,
+                     archive_code, raw_target_name),
+                )
+            else:
                 pg_cur.execute(
                     """
                     INSERT INTO skip_classifications
@@ -1947,9 +1931,9 @@ def triage_submit():
                     (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
                      cone_radius, cone_result, submitter, note),
                 )
-                n_inserted += pg_cur.rowcount
+            n_inserted = pg_cur.rowcount
     except psycopg.errors.ForeignKeyViolation:
-        return redirect("/triage?error=" + quote("One of those holdings no longer exists, or isn't in the skipped queue."))
+        return redirect("/triage?error=" + quote("That holding no longer exists, or isn't in the skipped queue."))
     except RuntimeError as exc:
         return redirect("/triage?error=" + quote(str(exc)))
 

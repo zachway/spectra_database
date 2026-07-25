@@ -411,6 +411,63 @@ STATS_QUERIES = {
 }
 
 
+# Precomputed per-(archive, reported target name) triage queue -- the
+# /triage page used to run this grouping live against the hosted
+# DuckDB/Parquet snapshot, but a true GROUP BY (archive_code, raw_target_name)
+# over the full skipped set (12M+ rows, 900k+ distinct names) OOM'd the 1 GiB
+# Cloud Run container outright, confirmed live against production -- same
+# OOM-shaped risk as everything else precomputed here, just without the
+# option of even a windowed live fallback (there's no cheap way to know which
+# recent rows share a name without grouping first). Computed here instead,
+# where memory isn't capped.
+#
+# Each group's member list is capped at TRIAGE_QUEUE_MAX_RECORDS via a
+# ROW_NUMBER()-then-FILTER, not a plain list() -- a plain list() still has to
+# build the *entire* array before anyone could trim it, and some names (e.g.
+# calibration-frame placeholders repeated across a whole run, or an archive
+# that reports no name at all) recur hundreds of thousands of times. The
+# FILTER means the aggregate only ever receives up to the cap's worth of
+# rows, so the array itself never grows past that -- confirmed against a
+# synthetic 200-row group that n_records still reports the true total (200)
+# while the array stays capped at 50. NULL and empty-string raw_target_name
+# are both treated as "no reported name" (COALESCE + NULLIF/TRIM), falling
+# back to one singleton group per record via its archive_obs_id -- otherwise
+# every nameless row in an archive would collapse into a single enormous
+# group, which is exactly the shape that caused the OOM in the first place.
+TRIAGE_QUEUE_MAX_RECORDS = 50
+TRIAGE_QUEUE_TOP_N = 200
+
+TRIAGE_QUEUE_QUERY = f"""
+WITH ranked AS (
+    SELECT h.archive_code, a.display_name, h.raw_target_name, h.archive_obs_id, h.archive_url,
+           h.raw_ra, h.raw_dec, h.obs_date, h.instrument, h.updated_at,
+           COALESCE(NULLIF(TRIM(h.raw_target_name), ''), 'obs:' || h.archive_obs_id) AS group_key,
+           ROW_NUMBER() OVER (
+               PARTITION BY h.archive_code,
+                            COALESCE(NULLIF(TRIM(h.raw_target_name), ''), 'obs:' || h.archive_obs_id)
+               ORDER BY h.updated_at DESC
+           ) AS rn
+    FROM pg.spectroscopy_holdings h
+    JOIN pg.archives a ON a.archive_code = h.archive_code
+    WHERE h.match_status = 'skipped'
+)
+SELECT
+    archive_code, display_name, group_key,
+    NULLIF(TRIM(any_value(raw_target_name)), '') AS raw_target_name,
+    count(*) AS n_records,
+    list(archive_obs_id) FILTER (WHERE rn <= {TRIAGE_QUEUE_MAX_RECORDS}) AS archive_obs_ids,
+    list(archive_url) FILTER (WHERE rn <= {TRIAGE_QUEUE_MAX_RECORDS}) AS archive_urls,
+    min(raw_ra) AS raw_ra, min(raw_dec) AS raw_dec,
+    max(updated_at) AS updated_at,
+    min(obs_date) AS obs_date,
+    any_value(instrument) AS instrument
+FROM ranked
+GROUP BY archive_code, display_name, group_key
+ORDER BY updated_at DESC
+LIMIT {TRIAGE_QUEUE_TOP_N}
+"""
+
+
 def _fetch_all(con: duckdb.DuckDBPyConnection, sql: str) -> list[dict]:
     con.execute(sql)
     cols = [c[0] for c in con.description]
@@ -494,6 +551,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
         instrument_sky_sample_path = os.path.join(out_dir, "instrument_sky_sample.parquet")
         _atomic_copy(con, INSTRUMENT_SKY_SAMPLE_QUERY, instrument_sky_sample_path)
         logger.info("exported instrument_sky_sample -> %s", instrument_sky_sample_path)
+
+        triage_queue_path = os.path.join(out_dir, "triage_queue.parquet")
+        _atomic_copy(con, TRIAGE_QUEUE_QUERY, triage_queue_path)
+        logger.info("exported triage_queue -> %s", triage_queue_path)
 
         export_stats_summary(con, out_dir)
     finally:
