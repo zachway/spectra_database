@@ -145,7 +145,7 @@ SKY_SAMPLE_QUERY = f"""
     USING SAMPLE {SKY_SAMPLE_SIZE}
 """
 
-LEADERBOARD_TOP_N = 10
+LEADERBOARD_TOP_N = 20
 
 # Fully precomputed Leaderboard chart data — not just the raw per-(star,
 # period) counts, but the actual top-N-per-period selection webapp.app plots.
