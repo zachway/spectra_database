@@ -471,7 +471,16 @@ GROUP BY archive_code, display_name, group_key
 -- itself, not just display order -- otherwise a burst of recent nameless
 -- activity (e.g. a big LAMOST MRS sync) could crowd every named group out
 -- of the top {TRIAGE_QUEUE_TOP_N} entirely before webapp.app ever sees them.
-ORDER BY (raw_target_name IS NOT NULL) DESC, updated_at DESC
+--
+-- Repeats the NULLIF(TRIM(any_value(...))) expression rather than
+-- referencing the `raw_target_name` output alias -- confirmed live that
+-- referencing the bare alias here binds to `ranked.raw_target_name` (the
+-- raw, ungrouped column of the same name carried through the CTE) instead
+-- of the SELECT list's aggregate, which DuckDB then rejects as ungrouped:
+-- "column must appear in the GROUP BY clause or be part of an aggregate
+-- function." Wrapping the same expression in an aggregate again here
+-- sidesteps the ambiguity entirely.
+ORDER BY (NULLIF(TRIM(any_value(raw_target_name)), '') IS NOT NULL) DESC, updated_at DESC
 LIMIT {TRIAGE_QUEUE_TOP_N}
 """
 
