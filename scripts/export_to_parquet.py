@@ -26,6 +26,7 @@ import shutil
 import tempfile
 
 import duckdb
+import psycopg
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -562,6 +563,165 @@ def export_tables(database_url: str, out_dir: str) -> None:
         shutil.rmtree(spill_dir, ignore_errors=True)
 
 
+# =============================================================================
+# Import pending /triage classification submissions (design sketch).
+#
+# webapp.app's /triage/submit route has no live Postgres access (see its
+# module docstring) -- it appends one JSON line per submission to a public
+# file on joy instead, over a narrowly-scoped, forced-command-restricted SSH
+# connection (see webapp/app.py's _append_triage_submission and
+# scripts/joy_triage_append.py). This is the other half: reads that same
+# file (this script already runs on/near joy, with local filesystem access
+# to the same directory it just wrote the Parquet snapshot to) and imports
+# each line into the real skip_classifications table.
+#
+# Idempotent by construction, not by tracking an offset: every run re-reads
+# the *entire* file and INSERTs with ON CONFLICT (archive_code,
+# archive_obs_id, submitter) DO NOTHING, relying on skip_classifications'
+# existing one-vote-per-submitter unique index -- a line that was already
+# imported on a previous run just inserts 0 rows the second time, so there's
+# no offset/cursor state to track or get out of sync. The file is
+# deliberately never truncated -- this feature's traffic is human-submission
+# scale, re-scanning it every run costs nothing worth optimizing for.
+# =============================================================================
+
+TRIAGE_SUBMISSIONS_FILENAME = "triage_submissions.jsonl"
+
+REQUIRED_TRIAGE_FIELDS = {"archive_code", "outcome", "submitter", "submitted_at"}
+ALLOWED_TRIAGE_OUTCOMES = {"attach_gaia_source", "not_a_real_target", "confirmed_absent_from_gaia"}
+
+
+def import_triage_submissions(database_url: str, out_dir: str) -> None:
+    path = os.path.join(out_dir, TRIAGE_SUBMISSIONS_FILENAME)
+    if not os.path.exists(path):
+        logger.info("no triage submissions file at %s yet, skipping import", path)
+        return
+
+    with open(path, encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
+
+    n_inserted = 0
+    n_skipped = 0
+    # autocommit -- each line is its own statement, so one line Postgres
+    # rejects (stale archive_obs_id, a CHECK-constraint mismatch scripts/
+    # joy_triage_append.py's own validation didn't already catch) doesn't
+    # poison a transaction and block every line after it.
+    with psycopg.connect(database_url, autocommit=True) as conn, conn.cursor() as cur:
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("skipping malformed JSON line in %s: %r", path, line[:200])
+                n_skipped += 1
+                continue
+
+            if not (isinstance(obj, dict) and REQUIRED_TRIAGE_FIELDS.issubset(obj)
+                    and obj.get("outcome") in ALLOWED_TRIAGE_OUTCOMES
+                    and ("raw_target_name" in obj) != ("archive_obs_id" in obj)):
+                # The != above requires *exactly* one of the two -- neither
+                # present would otherwise reach the VALUES branch below and
+                # KeyError on the missing %(archive_obs_id)s binding (not a
+                # psycopg.Error, so the per-line except wouldn't catch it and
+                # this whole import would crash instead of just skipping the
+                # one bad line).
+                logger.warning("skipping malformed submission (missing fields/bad outcome): %r", obj)
+                n_skipped += 1
+                continue
+
+            raw_target_name = (obj.get("raw_target_name") or "").strip()
+            try:
+                if raw_target_name:
+                    # Expands one vote-by-name into every record the *live*
+                    # spectroscopy_holdings table currently has under that
+                    # (archive_code, name) and still marked 'skipped' -- not
+                    # just whatever was true at submission time, so a vote
+                    # on a big group still covers all of it even if more
+                    # records under that name showed up since.
+                    cur.execute(
+                        """
+                        INSERT INTO skip_classifications
+                            (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
+                             gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note, submitted_at)
+                        SELECT h.archive_code, h.archive_obs_id, %(outcome)s, %(proposed_gaia_source_id)s,
+                               %(gaia_cone_search_radius_arcsec)s, %(gaia_cone_search_result)s,
+                               %(submitter)s, %(note)s, %(submitted_at)s
+                        FROM spectroscopy_holdings h
+                        WHERE h.archive_code = %(archive_code)s AND h.match_status = 'skipped'
+                          AND NULLIF(TRIM(h.raw_target_name), '') = %(raw_target_name)s
+                        ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
+                        """,
+                        {**obj, "raw_target_name": raw_target_name},
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO skip_classifications
+                            (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
+                             gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note, submitted_at)
+                        VALUES (%(archive_code)s, %(archive_obs_id)s, %(outcome)s, %(proposed_gaia_source_id)s,
+                                %(gaia_cone_search_radius_arcsec)s, %(gaia_cone_search_result)s,
+                                %(submitter)s, %(note)s, %(submitted_at)s)
+                        ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
+                        """,
+                        obj,
+                    )
+            except psycopg.Error as exc:
+                logger.warning("skipping submission Postgres rejected (%s): %r", exc, obj)
+                n_skipped += 1
+                continue
+            n_inserted += cur.rowcount
+
+    logger.info(
+        "imported triage submissions from %s: %d line(s) read, %d new skip_classifications row(s), %d skipped",
+        path, len(lines), n_inserted, n_skipped,
+    )
+
+
+def _apply_skip_classification_if_quorum(pg_conn: psycopg.Connection, archive_code: str, archive_obs_id: str, quorum: int = 2) -> None:
+    """Design stub -- NOT called anywhere yet. Sketching the intended
+    consensus step so it's clear what's deferred and why, per the crowdsourced-
+    triage design notes. Lives here rather than in webapp.app because this
+    is the only piece of the pipeline with live Postgres access at all now
+    (see import_triage_submissions above and webapp.app's module docstring).
+
+    Intended logic once wired up (e.g. right after import_triage_submissions
+    processes a batch): tally this holding's not-yet-applied
+    skip_classifications rows grouped by outcome; if any one outcome has
+    >= `quorum` independent submitters agreeing:
+      - attach_gaia_source: call ingest.add_star.add_star(pg_conn,
+        proposed_gaia_source_id, input_name=...) (see add_star.py:188) to
+        fetch-and-track the star if it isn't already tracked, then UPDATE the
+        matching spectroscopy_holdings row to that star with
+        match_status='matched', match_method='manual'.
+      - not_a_real_target: UPDATE spectroscopy_holdings.match_status =
+        'rejected' (already a valid value in the match_status CHECK
+        constraint -- see db/schema.sql).
+      - confirmed_absent_from_gaia: no spectroscopy_holdings change (there's
+        genuinely no gaia_source_id/star to assign) -- just mark applied so
+        the row stops resurfacing in the /triage queue. May eventually want
+        its own terminal handling once the separate BSC/alternate-identifier
+        migration (in flight concurrently, see project notes) lands and a
+        star row can exist without a gaia_source_id at all -- out of scope
+        here.
+      - Mark every skip_classifications row for this holding applied_at =
+        now(), not just the winning outcome's rows, so disagreeing/minority
+        submissions don't linger as "pending" forever once a decision is made.
+
+    Open design questions this stub deliberately leaves unresolved:
+      - Exact quorum size (2 above is a placeholder) -- should it scale with
+        total submission count, or require a margin over the runner-up
+        outcome rather than a flat count?
+      - What happens if two different outcomes both individually reach quorum
+        (shouldn't happen if one-vote-per-submitter holds and quorum requires
+        genuine agreement, but worth a real tie-break rule before this goes
+        live, not just an assumption)?
+      - Should a submitter ever be able to revise their own vote? Currently
+        blocked outright by db/schema.sql's one-vote-per-submitter unique
+        index -- deliberate for this sketch, but worth revisiting.
+    """
+    raise NotImplementedError("apply/quorum step is a design stub -- see docstring, not wired up yet")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", required=True, help="directory Apache serves, e.g. ~/public_html/spectra_data")
@@ -572,6 +732,12 @@ def main() -> None:
     os.chmod(out_dir, 0o755)
 
     database_url = os.environ["DATABASE_URL"]
+    # Import first, so this run's triage_queue.parquet (built inside
+    # export_tables) reflects any records that just got voted 'rejected'
+    # or similar by a *future* apply step -- doesn't matter yet since that
+    # step isn't wired up (see _apply_skip_classification_if_quorum), but
+    # importing before exporting is the right order once it is.
+    import_triage_submissions(database_url, out_dir)
     export_tables(database_url, out_dir)
 
 

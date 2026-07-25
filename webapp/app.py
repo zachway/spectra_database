@@ -2,14 +2,23 @@
 Gaia source_id or name, plus a batch upload for a list of either.
 
 Reads a read-only DuckDB view over a Parquet snapshot instead of a live
-Postgres connection — this process has no DATABASE_URL and never writes.
-The snapshot is written by scripts.export_to_parquet from the real Postgres
-database (wherever that runs) directly into morgan's ~/public_html, which
-joy's Apache (mod_userdir) already serves publicly — morgan and joy share
-the same NFS home directory, so nothing needs to explicitly sync/publish
-anything. This app reads it straight over HTTP via DuckDB's httpfs
-extension (SPECTRA_DATA_URL, what the hosted Cloud Run service uses), or
-from a local directory (SPECTRA_DATA_DIR) for local dev.
+Postgres connection — this process has no DATABASE_URL and never touches
+Postgres at all, not even to write. The snapshot is written by
+scripts.export_to_parquet from the real Postgres database (wherever that
+runs) directly into morgan's ~/public_html, which joy's Apache (mod_userdir)
+already serves publicly — morgan and joy share the same NFS home directory,
+so nothing needs to explicitly sync/publish anything. This app reads it
+straight over HTTP via DuckDB's httpfs extension (SPECTRA_DATA_URL, what the
+hosted Cloud Run service uses), or from a local directory (SPECTRA_DATA_DIR)
+for local dev.
+
+The one exception is /triage's classification submissions, which do need to
+persist somewhere: rather than opening a write path from this public,
+unauthenticated web tier to Postgres, they're appended as JSON lines to
+another public file on joy over a narrowly-scoped SSH connection (see
+_append_triage_submission / _joy_ssh_client below) and only actually land in
+skip_classifications the next time scripts.export_to_parquet runs and
+imports them.
 
 Run locally against a local export:
     python3 -m scripts.export_to_parquet --out-dir ./data
@@ -21,16 +30,21 @@ Run against the hosted snapshot (what Cloud Run does):
 
 from __future__ import annotations
 
+import base64
 import csv
 import io
+import json
 import os
+import urllib.error
+import urllib.request
 from collections import defaultdict
+from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
 
 import astropy.units as u
 import duckdb
 import numpy as np
-import psycopg
+import paramiko
 from astropy.coordinates import SkyCoord
 from flask import Flask, Response, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
@@ -1531,26 +1545,137 @@ def batch_search():
 # Crowdsourced triage for match_status = 'skipped' rows (design sketch).
 #
 # Every other route in this file only reads the DuckDB/Parquet snapshot (see
-# the module docstring) -- this is the app's first genuine write path.
-# Submitting a classification needs to land immediately in the real Postgres
-# database, not wait for the next scripts.export_to_parquet snapshot, so
-# these two routes open their own live psycopg connection via DATABASE_URL
-# instead of going through get_cursor(). DATABASE_URL is NOT set on the
-# hosted Cloud Run deployment today (see project deployment notes) -- wiring
-# up a writable path from the public web tier to Postgres (almost certainly
-# needing its own auth/rate-limiting, since there's no login for this app at
-# all yet) is an open deployment question this sketch does not resolve.
+# the module docstring) -- this is the app's first genuine write path. An
+# earlier version of this opened a live psycopg connection via DATABASE_URL
+# straight to Postgres, but DATABASE_URL is deliberately never set on the
+# hosted Cloud Run deployment: this is a public, unauthenticated web tier,
+# and giving it direct write access to the real database is a bigger blast
+# radius than this feature is worth. Submissions are appended instead as
+# JSON lines to a public file on joy (same host/directory
+# scripts.export_to_parquet already publishes the Parquet snapshot to) over
+# a narrowly-scoped SSH connection, and only actually land in
+# skip_classifications the next time scripts.export_to_parquet runs and
+# imports them (see its TRIAGE_QUEUE_QUERY-adjacent import_triage_submissions).
 # =============================================================================
 
-def _pg_connection() -> psycopg.Connection:
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
+TRIAGE_SUBMISSIONS_FILENAME = "triage_submissions.jsonl"
+
+
+def _joy_ssh_client() -> paramiko.SSHClient:
+    """A dedicated, narrowly-scoped SSH key -- never committed to this repo,
+    configured entirely via env vars (Cloud Run Secret Manager in
+    production) -- connects to joy to append one classification submission.
+    The corresponding authorized_keys entry on joy MUST use a forced
+    `command=` restriction (see scripts/joy_triage_append.py's setup
+    docstring) so this key can only ever run that one append script, never
+    an arbitrary shell command -- confirmed live during development that a
+    session requesting an arbitrary command string still only ever runs the
+    forced command.
+
+    JOY_SSH_HOST_KEY pins the expected host key rather than trusting
+    on first use (paramiko's AutoAddPolicy) -- format is a single
+    "<keytype> <base64>" pair, e.g. one line copied from
+    /etc/ssh/ssh_host_ed25519_key.pub on joy itself (more trustworthy than
+    `ssh-keyscan`, which is itself a first-use trust decision).
+    """
+    host = os.environ.get("JOY_SSH_HOST")
+    user = os.environ.get("JOY_SSH_USER")
+    key_path = os.environ.get("JOY_SSH_KEY_PATH")
+    port = int(os.environ.get("JOY_SSH_PORT", "22"))
+    host_key_line = os.environ.get("JOY_SSH_HOST_KEY")
+    if not (host and user and key_path and host_key_line):
         raise RuntimeError(
-            "DATABASE_URL is not set in this environment -- the /triage submission "
-            "routes need a live, writable Postgres connection, unlike every other "
-            "route in this app (see the comment above _pg_connection)."
+            "JOY_SSH_HOST, JOY_SSH_USER, JOY_SSH_KEY_PATH, and JOY_SSH_HOST_KEY "
+            "must all be set -- the /triage submission route needs a live SSH "
+            "connection to joy to append a classification (see the comment "
+            "above _joy_ssh_client)."
         )
-    return psycopg.connect(database_url)
+
+    key_type, key_b64 = host_key_line.split(None, 1)
+    host_key = paramiko.PKey.from_type_string(key_type, base64.b64decode(key_b64))
+
+    client = paramiko.SSHClient()
+    # Matches paramiko's own internal lookup-key format (SSHClient.connect):
+    # bare hostname on the default port, "[host]:port" otherwise -- getting
+    # this wrong makes host key verification silently fail to match and
+    # raise "not found in known_hosts" even though the right key was added.
+    lookup_name = host if port == 22 else f"[{host}]:{port}"
+    client.get_host_keys().add(lookup_name, key_type, host_key)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    client.connect(
+        host, port=port, username=user, key_filename=key_path,
+        timeout=10, look_for_keys=False, allow_agent=False,
+    )
+    return client
+
+
+def _append_triage_submission(payload: dict) -> None:
+    client = _joy_ssh_client()
+    try:
+        # The remote end's authorized_keys `command=` forced-command ignores
+        # whatever we ask to exec here and always runs the append script --
+        # see scripts/joy_triage_append.py. The literal string doesn't
+        # matter, but exec_command requires one.
+        stdin, stdout, stderr = client.exec_command("append-triage-submission", timeout=10)
+        stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        stdin.channel.shutdown_write()
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            err = stderr.read().decode("utf-8", "replace").strip()
+            raise RuntimeError(f"joy rejected this submission (exit {exit_status}): {err}")
+    finally:
+        client.close()
+
+
+def _fetch_triage_submissions() -> tuple[list[dict], str | None]:
+    """Reads the public triage_submissions.jsonl file joy's Apache serves
+    (appended to by _append_triage_submission, imported into
+    skip_classifications by scripts.export_to_parquet).
+
+    Deliberately NOT read via the DATA_TABLES/CREATE VIEW mechanism in
+    _make_connection -- that mechanism assumes every file already exists at
+    process startup (a missing one there fails every route, not just
+    /triage), and this file doesn't exist at all until the first submission
+    is ever made. A 404 here is a normal, expected state.
+
+    Since this reads the raw append log rather than skip_classifications
+    directly, it shows every submission ever made under a name, not just
+    ones not yet applied (this process has no way to know
+    skip_classifications.applied_at) -- good enough for "does this
+    identifier already have votes", which is all /triage uses it for.
+    """
+    source = _resolve_data_source()
+    if source.startswith("http://") or source.startswith("https://"):
+        try:
+            with urllib.request.urlopen(f"{source}/{TRIAGE_SUBMISSIONS_FILENAME}", timeout=10) as resp:
+                body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return [], None
+            return [], str(exc)
+        except (urllib.error.URLError, OSError) as exc:
+            return [], str(exc)
+    else:
+        # SPECTRA_DATA_DIR local-dev mode -- source is a plain directory.
+        local_path = os.path.join(source, TRIAGE_SUBMISSIONS_FILENAME)
+        if not os.path.exists(local_path):
+            return [], None
+        try:
+            with open(local_path, encoding="utf-8") as f:
+                body = f.read()
+        except OSError as exc:
+            return [], str(exc)
+
+    submissions = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            submissions.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # tolerate a stray malformed line rather than 500ing the whole page
+    return submissions, None
 
 
 # Generous compared to ingest.add_star.resolve_gaia_source_id's 2" ambiguity-
@@ -1616,9 +1741,11 @@ TRIAGE_TEMPLATE = """
     same identifier doesn't resurface over and over -- a classification is
     submitted once and recorded against every underlying record sharing that
     name. Submissions below do <b>not</b> update the database directly: they
-    accumulate as independent votes in a new skip_classifications table, and
-    only get applied once a quorum of contributors agree (design sketch --
-    the apply step is a documented stub in webapp/app.py, not wired up yet).
+    accumulate as independent votes (recorded to a public file, imported
+    into the real skip_classifications table the next time this project's
+    export job runs) and only get applied once a quorum of contributors
+    agree (design sketch -- the apply step is a documented stub, not wired
+    up yet).
   </p>
 
   {% if error %}
@@ -1627,8 +1754,8 @@ TRIAGE_TEMPLATE = """
   {% if note %}
     <p class="note">{{ note }}</p>
   {% endif %}
-  {% if pg_error %}
-    <p class="note">Live prior-submission counts unavailable ({{ pg_error }}) -- showing the skipped queue without them.</p>
+  {% if submissions_error %}
+    <p class="note">Prior-submission history unavailable ({{ submissions_error }}) -- showing the skipped queue without it.</p>
   {% endif %}
 
   {% for r in rows %}
@@ -1660,7 +1787,7 @@ TRIAGE_TEMPLATE = """
     {% endif %}
 
     {% if r.prior_submissions %}
-    <p class="prior-submissions">{{ r.prior_submissions|length }} prior submission{{ "s" if r.prior_submissions|length != 1 else "" }} across these records (not yet applied):
+    <p class="prior-submissions">{{ r.prior_submissions|length }} prior submission{{ "s" if r.prior_submissions|length != 1 else "" }} under this name:
       {% for s in r.prior_submissions %}{{ s.outcome }} ({{ s.submitter }}){% if not loop.last %}; {% endif %}{% endfor %}
     </p>
     {% endif %}
@@ -1742,40 +1869,23 @@ def triage():
     preview_key = (request.args.get("preview_archive_code", ""), request.args.get("preview_group_key", ""))
     preview_result = request.args.get("preview_result", "")
 
-    # Existing (not-yet-applied) submissions, so a contributor can see this
-    # group already has other independent votes before adding their own --
-    # read live from Postgres, since skip_classifications isn't part of the
-    # DuckDB/Parquet snapshot (see _pg_connection's comment above). Degrades
-    # gracefully if DATABASE_URL isn't configured in this environment, same
-    # as the SIMBAD-outage handling elsewhere in this file. Keyed by the
-    # individual (archive_code, archive_obs_id) natural key the table already
-    # uses -- grouping into per-identifier rows happens below, in Python.
-    submissions_by_holding = defaultdict(list)
-    pg_error = None
-    try:
-        with _pg_connection() as pg_conn, pg_conn.cursor() as pg_cur:
-            pg_cur.execute(
-                """
-                SELECT archive_code, archive_obs_id, outcome, submitter, submitted_at
-                FROM skip_classifications
-                WHERE applied_at IS NULL
-                ORDER BY submitted_at DESC
-                """
-            )
-            cols = [d.name for d in pg_cur.description]
-            for row in pg_cur.fetchall():
-                d = dict(zip(cols, row))
-                submissions_by_holding[(d["archive_code"], d["archive_obs_id"])].append(d)
-    except Exception as exc:
-        pg_error = str(exc)
+    # Submission history, so a contributor can see this identifier already
+    # has other independent votes before adding their own -- read from the
+    # same public JSONL file _append_triage_submission writes to (see its
+    # comment), grouped the same way triage_queue's group_key is: this
+    # process has no way to know skip_classifications.applied_at (it never
+    # touches Postgres at all), so this shows every submission ever made
+    # under a name, not just ones not yet applied.
+    submissions, submissions_error = _fetch_triage_submissions()
+    submissions_by_group = defaultdict(list)
+    for s in submissions:
+        name = (s.get("raw_target_name") or "").strip()
+        group_key = name if name else f"obs:{s.get('archive_obs_id')}"
+        submissions_by_group[(s.get("archive_code"), group_key)].append(s)
 
     for r in rows:
         key = (r["archive_code"], r["group_key"])
-        r["prior_submissions"] = [
-            s
-            for oid in r["archive_obs_ids"]
-            for s in submissions_by_holding.get((r["archive_code"], oid), [])
-        ]
+        r["prior_submissions"] = submissions_by_group.get(key, [])
         if r["raw_ra"] is not None and r["raw_dec"] is not None:
             r["aladin_url"] = _aladin_lite_url(r["raw_ra"], r["raw_dec"])
             r["simbad_url"] = _simbad_coord_url(r["raw_ra"], r["raw_dec"])
@@ -1793,7 +1903,7 @@ def triage():
     return render_template_string(
         TRIAGE_TEMPLATE, active_tab="triage", rows=rows,
         error=request.args.get("error"), note=request.args.get("note"),
-        pg_error=pg_error, triage_cone_search_radius=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC,
+        submissions_error=submissions_error, triage_cone_search_radius=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC,
     )
 
 
@@ -1890,100 +2000,42 @@ def triage_submit():
     elif outcome != "not_a_real_target":
         return redirect("/triage?error=" + quote("Unrecognized outcome."))
 
+    # archive_obs_id/raw_target_name pass through as-is (either the specific
+    # record, for a nameless singleton group, or the shared name, for a named
+    # group); scripts.export_to_parquet's import step is what actually
+    # expands a named-group vote to every currently-matching record, since
+    # this process has no live Postgres access to do that expansion itself
+    # anymore -- see its import_triage_submissions().
+    payload = {
+        "archive_code": archive_code,
+        "outcome": outcome,
+        "proposed_gaia_source_id": proposed_gaia_source_id,
+        "gaia_cone_search_radius_arcsec": cone_radius,
+        "gaia_cone_search_result": cone_result,
+        "submitter": submitter,
+        "note": note,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if raw_target_name:
+        payload["raw_target_name"] = raw_target_name
+    else:
+        payload["archive_obs_id"] = archive_obs_id
+
     try:
-        with _pg_connection() as pg_conn, pg_conn.cursor() as pg_cur:
-            # skip_classifications' natural key stays per-record (see its
-            # schema comment) -- grouping by identifier is purely a
-            # triage-page presentation choice. For a named group this
-            # INSERT...SELECT records one vote against every record the
-            # *live* Postgres spectroscopy_holdings table currently has
-            # under that (archive_code, name) and still marked 'skipped' --
-            # not just the up-to-50 sampled into triage_queue for display,
-            # so a vote on a huge group (e.g. a calibration-frame name with
-            # hundreds of hits) still covers all of it. ON CONFLICT DO
-            # NOTHING so a submitter who already voted on some of these
-            # records still gets their vote recorded for the rest, instead
-            # of the whole submission failing outright.
-            if raw_target_name:
-                pg_cur.execute(
-                    """
-                    INSERT INTO skip_classifications
-                        (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
-                         gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note)
-                    SELECT h.archive_code, h.archive_obs_id, %s, %s, %s, %s, %s, %s
-                    FROM spectroscopy_holdings h
-                    WHERE h.archive_code = %s AND h.match_status = 'skipped'
-                      AND NULLIF(TRIM(h.raw_target_name), '') = %s
-                    ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
-                    """,
-                    (outcome, proposed_gaia_source_id, cone_radius, cone_result, submitter, note,
-                     archive_code, raw_target_name),
-                )
-            else:
-                pg_cur.execute(
-                    """
-                    INSERT INTO skip_classifications
-                        (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
-                         gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
-                    """,
-                    (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
-                     cone_radius, cone_result, submitter, note),
-                )
-            n_inserted = pg_cur.rowcount
-    except psycopg.errors.ForeignKeyViolation:
-        return redirect("/triage?error=" + quote("That holding no longer exists, or isn't in the skipped queue."))
+        _append_triage_submission(payload)
     except RuntimeError as exc:
         return redirect("/triage?error=" + quote(str(exc)))
+    except Exception as exc:  # paramiko raises various exception types for network/auth failures
+        return redirect("/triage?error=" + quote(f"Could not reach joy to record this submission: {exc}"))
 
-    if n_inserted == 0:
-        return redirect("/triage?error=" + quote(f"{submitter!r} has already submitted a classification for every record under this name."))
-
-    return redirect("/triage?note=" + quote(f"Submission recorded for {n_inserted} record(s) — thank you."))
-
-
-def _apply_skip_classification_if_quorum(pg_conn: psycopg.Connection, archive_code: str, archive_obs_id: str, quorum: int = 2) -> None:
-    """Design stub -- NOT called by any route yet. Sketching the intended
-    consensus step so it's clear what's deferred and why, per the crowdsourced-
-    triage design notes.
-
-    Intended logic once wired up (e.g. inline right after triage_submit()
-    records a new row, or from a small periodic job): tally this holding's
-    not-yet-applied skip_classifications rows grouped by outcome; if any one
-    outcome has >= `quorum` independent submitters agreeing:
-      - attach_gaia_source: call ingest.add_star.add_star(pg_conn,
-        proposed_gaia_source_id, input_name=...) (see add_star.py:188) to
-        fetch-and-track the star if it isn't already tracked, then UPDATE the
-        matching spectroscopy_holdings row to that star with
-        match_status='matched', match_method='manual'.
-      - not_a_real_target: UPDATE spectroscopy_holdings.match_status =
-        'rejected' (already a valid value in the match_status CHECK
-        constraint -- see db/schema.sql).
-      - confirmed_absent_from_gaia: no spectroscopy_holdings change (there's
-        genuinely no gaia_source_id/star to assign) -- just mark applied so
-        the row stops resurfacing in the /triage queue. May eventually want
-        its own terminal handling once the separate BSC/alternate-identifier
-        migration (in flight concurrently, see project notes) lands and a
-        star row can exist without a gaia_source_id at all -- out of scope
-        here.
-      - Mark every skip_classifications row for this holding applied_at =
-        now(), not just the winning outcome's rows, so disagreeing/minority
-        submissions don't linger as "pending" forever once a decision is made.
-
-    Open design questions this stub deliberately leaves unresolved:
-      - Exact quorum size (2 above is a placeholder) -- should it scale with
-        total submission count, or require a margin over the runner-up
-        outcome rather than a flat count?
-      - What happens if two different outcomes both individually reach quorum
-        (shouldn't happen if one-vote-per-submitter holds and quorum requires
-        genuine agreement, but worth a real tie-break rule before this goes
-        live, not just an assumption)?
-      - Should a submitter ever be able to revise their own vote? Currently
-        blocked outright by db/schema.sql's one-vote-per-submitter unique
-        index -- deliberate for this sketch, but worth revisiting.
-    """
-    raise NotImplementedError("apply/quorum step is a design stub -- see docstring, not wired up yet")
+    # Unlike the old live-Postgres path, this can't check ON CONFLICT/dedup
+    # or FK validity against spectroscopy_holdings up front -- joy_triage_
+    # append.py only validates shape, not against the database. A submitter
+    # voting twice on the same identifier, or an identifier that's no longer
+    # actually skipped, is only caught at import time now.
+    return redirect("/triage?note=" + quote(
+        "Submission recorded — it'll be applied to skip_classifications the next time the export job runs."
+    ))
 
 
 if __name__ == "__main__":

@@ -8,3 +8,4 @@ duckdb
 scipy
 aiohttp
 pytz
+paramiko
