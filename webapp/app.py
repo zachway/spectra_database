@@ -1643,12 +1643,13 @@ TRIAGE_TEMPLATE = """
       {% endif %}
       {% if r.obs_date %} — earliest {{ r.obs_date }}{% endif %}
       {% if r.instrument %} — {{ r.instrument }}{% endif %}
-      — {{ r.n_records }} record{{ "s" if r.n_records != 1 else "" }}
+      — {{ r.n_records }} record{{ "s" if r.n_records != 1 else "" }} in this recent batch
     </p>
 
     <details class="record-list">
-      <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name</summary>
+      <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name (this recent batch only, not a lifetime total)</summary>
       {% for oid, url in r.records %}<a href="{{ url }}" target="_blank" rel="noopener">{{ oid }}</a>{% endfor %}
+      {% if r.records_truncated %}<span class="note">…and more (showing first {{ r.records|length }})</span>{% endif %}
     </details>
 
     {% if r.aladin_url %}
@@ -1702,31 +1703,77 @@ TRIAGE_TEMPLATE = """
 """
 
 
+# How many of the most-recently-updated skipped rows to pull before grouping
+# by identifier -- see the comment in triage() for why this can't just be a
+# SQL GROUP BY over the whole table.
+TRIAGE_WINDOW_SIZE = 5000
+
+# How many underlying records to actually list (as links) per identifier
+# group in the rendered page -- independent of TRIAGE_WINDOW_SIZE, just a
+# sane cap on how much a <details> block should ever try to render.
+TRIAGE_MAX_RECORDS_SHOWN = 50
+
+
 @app.route("/triage")
 def triage():
     cur = get_cursor()
+    # Deliberately NOT `GROUP BY archive_code, raw_target_name` over the
+    # whole spectroscopy_holdings table here -- measured directly against the
+    # production Parquet snapshot, that OOMs the 1 GiB Cloud Run container
+    # even with only cheap scalar aggregates (no list()): the skipped set is
+    # 12M+ rows across 900K+ distinct names, and DuckDB has to hold one
+    # accumulator per distinct group until the whole input is consumed. This
+    # instead reuses the plain, cheap, already-proven-safe
+    # ORDER BY updated_at DESC LIMIT query (same shape as before this
+    # feature existed, just a wider window) and groups only that bounded
+    # window in Python below. Trade-off: "N records" reflects how many of
+    # this identifier's records fall within the recent window, not a
+    # lifetime total -- consistent with the page only ever having shown the
+    # most-recently-touched rows to begin with.
     cur.execute(
         """
-        SELECT h.archive_code, a.display_name,
-               COALESCE(h.raw_target_name, 'obs:' || h.archive_obs_id) AS group_key,
-               h.raw_target_name,
-               count(*) AS n_records,
-               list(h.archive_obs_id) AS archive_obs_ids,
-               list(h.archive_url) AS archive_urls,
-               min(h.raw_ra) AS raw_ra, min(h.raw_dec) AS raw_dec,
-               max(h.updated_at) AS updated_at,
-               min(h.obs_date) AS obs_date,
-               any_value(h.instrument) AS instrument
+        SELECT h.archive_code, a.display_name, h.archive_obs_id, h.archive_url,
+               h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.instrument, h.updated_at
         FROM spectroscopy_holdings h
         JOIN archives a ON a.archive_code = h.archive_code
         WHERE h.match_status = 'skipped'
-        GROUP BY h.archive_code, a.display_name,
-                 COALESCE(h.raw_target_name, 'obs:' || h.archive_obs_id), h.raw_target_name
-        ORDER BY updated_at DESC
-        LIMIT 20
-        """
+        ORDER BY h.updated_at DESC
+        LIMIT ?
+        """,
+        [TRIAGE_WINDOW_SIZE],
     )
-    rows = _rows_as_dicts(cur)
+    window_rows = _rows_as_dicts(cur)
+
+    groups: dict[tuple[str, str], dict] = {}
+    for row in window_rows:
+        name = (row["raw_target_name"] or "").strip()
+        group_key = name if name else f"obs:{row['archive_obs_id']}"
+        gkey = (row["archive_code"], group_key)
+        g = groups.get(gkey)
+        if g is None:
+            g = groups[gkey] = {
+                "archive_code": row["archive_code"],
+                "display_name": row["display_name"],
+                "group_key": group_key,
+                "raw_target_name": name or None,
+                "n_records": 0,
+                "records": [],
+                "archive_obs_ids": [],
+                "raw_ra": row["raw_ra"],
+                "raw_dec": row["raw_dec"],
+                "obs_date": row["obs_date"],
+                "instrument": row["instrument"],
+                "updated_at": row["updated_at"],
+            }
+        g["n_records"] += 1
+        g["records"].append((row["archive_obs_id"], row["archive_url"]))
+        g["archive_obs_ids"].append(row["archive_obs_id"])
+        if row["updated_at"] > g["updated_at"]:
+            g["updated_at"] = row["updated_at"]
+        if row["obs_date"] and (not g["obs_date"] or row["obs_date"] < g["obs_date"]):
+            g["obs_date"] = row["obs_date"]
+
+    rows = sorted(groups.values(), key=lambda g: g["updated_at"], reverse=True)[:20]
 
     # Cone-search preview, if the contributor just clicked "run live cone
     # search" for one identifier group below (see /triage/cone_search) --
@@ -1764,7 +1811,8 @@ def triage():
 
     for r in rows:
         key = (r["archive_code"], r["group_key"])
-        r["records"] = list(zip(r["archive_obs_ids"], r["archive_urls"]))
+        r["records_truncated"] = r["n_records"] > TRIAGE_MAX_RECORDS_SHOWN
+        r["records"] = r["records"][:TRIAGE_MAX_RECORDS_SHOWN]
         r["prior_submissions"] = [
             s
             for oid in r["archive_obs_ids"]
