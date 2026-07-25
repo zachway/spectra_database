@@ -245,6 +245,88 @@ def add_star_by_name(conn: psycopg.Connection, name: str) -> dict:
     return add_star(conn, gaia_source_id, input_name=name)
 
 
+# Gaia saturates on the brightest naked-eye stars -- confirmed live via a
+# cross-match of the Yale Bright Star Catalogue (BSC5) against
+# gaiadr3.gaia_source (30" radius): 70 of the 170 BSC5 stars brighter than
+# V=3 have no credible Gaia counterpart (18 with zero Gaia sources within
+# 30", another 52 where the closest candidate is >3 mag fainter than
+# expected -- almost certainly an unrelated neighbor, not the star itself).
+# Arcturus/HR 5340 is among them. These stars are tracked via
+# source_catalog='bsc5' + bsc_hr_number instead of gaia_source_id (see
+# db/migrations/0001_star_id_surrogate_key.sql).
+#
+# SIMBAD (not VizieR's own BSC5 mirror) is the data source here: VizieR's
+# V/50/catalog table only carries HR/Name/HD/ADS/VarID/RAJ2000/DEJ2000/
+# Vmag/B-V/SpType/NoteFlag -- no proper motion or parallax, needed for
+# sync.matcher's positional-match propagation. SIMBAD recognizes "HR <n>"
+# directly and returns full astrometry plus the same alias list
+# fetch_name_aliases would give for a Gaia-sourced star.
+BSC5_SIMBAD_FIELDS = ("ids", "ra", "dec", "pmra", "pmdec", "plx_value")
+
+# For a bright star with no Gaia entry, SIMBAD's own cross-matched
+# astrometry is almost always sourced from the Hipparcos catalog (van
+# Leeuwen's 2007 re-reduction) -- confirmed live for Arcturus
+# (coo_bibcode 2007A&A...474..653V). SIMBAD doesn't expose a clean
+# per-field epoch for pmra/pmdec/plx_value the way it does coo_bibcode for
+# position, so this is hardcoded rather than queried per star.
+BSC5_REF_EPOCH = 1991.25
+
+
+def add_bsc_star(conn: psycopg.Connection, hr_number: int, input_name: str | None = None) -> dict:
+    """Register a star with no Gaia source_id at all, via its Bright Star
+    (Harvard Revised) catalog number -- see BSC5_SIMBAD_FIELDS above for why
+    SIMBAD rather than VizieR is the data source. No Gaia photometry
+    (phot_g_mean_mag etc.) is populated -- Johnson V isn't the same
+    photometric system, and mapping one onto the other would be misleading
+    rather than merely approximate. No RVS holding to seed either (unlike
+    add_star) -- Gaia RVS is definitionally not available for a star Gaia
+    doesn't carry at all.
+    """
+    simbad = Simbad()
+    simbad.add_votable_fields(*BSC5_SIMBAD_FIELDS)
+    result = simbad.query_object(f"HR {hr_number}")
+    if result is None or len(result) == 0:
+        raise ValueError(f"HR {hr_number} not found in SIMBAD")
+    row = result[0]
+
+    star = {
+        "bsc_hr_number": hr_number,
+        "ra": float(row["ra"]),
+        "dec": float(row["dec"]),
+        "ref_epoch": BSC5_REF_EPOCH,
+        "pmra": clean_float(row["pmra"]),
+        "pmdec": clean_float(row["pmdec"]),
+        "parallax": clean_float(row["plx_value"]),
+        "input_name": input_name,
+        "name_aliases": [tok.strip() for tok in str(row["ids"]).split("|")] if row["ids"] else [],
+    }
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO stars (source_catalog, bsc_hr_number, ra, dec, ref_epoch, pmra, pmdec,
+                                parallax, input_name, name_aliases)
+            VALUES ('bsc5', %(bsc_hr_number)s, %(ra)s, %(dec)s, %(ref_epoch)s, %(pmra)s,
+                    %(pmdec)s, %(parallax)s, %(input_name)s, %(name_aliases)s)
+            ON CONFLICT (bsc_hr_number) DO UPDATE SET
+                ra = EXCLUDED.ra,
+                dec = EXCLUDED.dec,
+                ref_epoch = EXCLUDED.ref_epoch,
+                pmra = EXCLUDED.pmra,
+                pmdec = EXCLUDED.pmdec,
+                parallax = EXCLUDED.parallax,
+                input_name = COALESCE(EXCLUDED.input_name, stars.input_name),
+                name_aliases = EXCLUDED.name_aliases
+            RETURNING star_id
+            """,
+            star,
+        )
+        star["star_id"] = cur.fetchone()[0]
+
+    conn.commit()
+    return star
+
+
 # Larger than it looks necessary: each chunk is one Gaia.launch_job round
 # trip, and Gaia's TAP+ endpoint starts erroring after ~10 back-to-back
 # queries in a short window (see _launch_gaia_job's docstring). A
