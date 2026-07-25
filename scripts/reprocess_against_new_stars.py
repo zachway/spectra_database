@@ -60,7 +60,17 @@ from sync.base import RawObservation
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 2000
+# Much larger than scripts.reprocess_skipped's CHUNK_SIZE=2000 (fine at
+# that script's usual scale: one archive, one outage window) -- at full
+# catalog-sweep scale (the skipped/needs_review population alone is
+# ~12.85M rows, confirmed live 2026-07-25), sync.matcher.match_records
+# reloads and rebuilds its full star-alias dict (1.4M rows, confirmed live)
+# from scratch on every single call, once per chunk. At CHUNK_SIZE=2000
+# that's ~6,425 redundant 1.4M-row reads across one sweep -- almost
+# entirely wasted work. A much bigger chunk cuts that by the same factor;
+# 20000 keeps memory use for one chunk's RawObservation/SkyCoord arrays
+# modest regardless.
+CHUNK_SIZE = 20000
 
 # How close an existing tracked star has to be to a newly-added one before
 # its own positional-matched holdings get re-checked -- tight, not the
