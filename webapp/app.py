@@ -1599,19 +1599,26 @@ TRIAGE_TEMPLATE = """
     .finder-links a { margin-right: 1rem; }
     .prior-submissions { font-style: italic; }
     .cone-result { display: block; margin: 0.2rem 0 0.2rem 1.4rem; }
+    .record-list { font-size: 0.9rem; }
+    .record-list a { margin-right: 0.8rem; }
+    .mood-image { float: right; max-width: 140px; margin: 0 0 0.5rem 1rem; }
   </style>
 </head>
 <body>
+  <img class="mood-image" src="/static/triage_mood.jpg" alt="how the triage queue feels sometimes">
   <h1>Spectra Database</h1>""" + NAV_HTML + """
   <h2>Triage: skipped records</h2>
   <p class="note">
     These are spectroscopy_holdings rows with match_status = 'skipped' -- the
     automated matcher (see <a href="/info">More Info</a>) found no name or
-    positional candidate at all for them. Submissions below do <b>not</b>
-    update the database directly: they accumulate as independent votes in a
-    new skip_classifications table, and only get applied once a quorum of
-    contributors agree (design sketch -- the apply step is a documented stub
-    in webapp/app.py, not wired up yet).
+    positional candidate at all for them. Rows below are grouped by
+    (archive, reported target name) rather than shown one-per-record, so the
+    same identifier doesn't resurface over and over -- a classification is
+    submitted once and recorded against every underlying record sharing that
+    name. Submissions below do <b>not</b> update the database directly: they
+    accumulate as independent votes in a new skip_classifications table, and
+    only get applied once a quorum of contributors agree (design sketch --
+    the apply step is a documented stub in webapp/app.py, not wired up yet).
   </p>
 
   {% if error %}
@@ -1634,10 +1641,15 @@ TRIAGE_TEMPLATE = """
       {% else %}
         (no reported position)
       {% endif %}
-      {% if r.obs_date %} — {{ r.obs_date }}{% endif %}
+      {% if r.obs_date %} — earliest {{ r.obs_date }}{% endif %}
       {% if r.instrument %} — {{ r.instrument }}{% endif %}
-      — <a href="{{ r.archive_url }}" target="_blank" rel="noopener">archive record</a>
+      — {{ r.n_records }} record{{ "s" if r.n_records != 1 else "" }}
     </p>
+
+    <details class="record-list">
+      <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name</summary>
+      {% for oid, url in r.records %}<a href="{{ url }}" target="_blank" rel="noopener">{{ oid }}</a>{% endfor %}
+    </details>
 
     {% if r.aladin_url %}
     <p class="finder-links">
@@ -1647,14 +1659,14 @@ TRIAGE_TEMPLATE = """
     {% endif %}
 
     {% if r.prior_submissions %}
-    <p class="prior-submissions">{{ r.prior_submissions|length }} prior submission{{ "s" if r.prior_submissions|length != 1 else "" }} (not yet applied):
+    <p class="prior-submissions">{{ r.prior_submissions|length }} prior submission{{ "s" if r.prior_submissions|length != 1 else "" }} across these records (not yet applied):
       {% for s in r.prior_submissions %}{{ s.outcome }} ({{ s.submitter }}){% if not loop.last %}; {% endif %}{% endfor %}
     </p>
     {% endif %}
 
     <form method="post" action="/triage/submit">
       <input type="hidden" name="archive_code" value="{{ r.archive_code }}">
-      <input type="hidden" name="archive_obs_id" value="{{ r.archive_obs_id }}">
+      {% for oid in r.archive_obs_ids %}<input type="hidden" name="archive_obs_ids" value="{{ oid }}">{% endfor %}
 
       <label><input type="radio" name="outcome" value="attach_gaia_source" required>
         Attach to Gaia source:
@@ -1680,7 +1692,7 @@ TRIAGE_TEMPLATE = """
 
       <label>Submitter name/handle: <input type="text" name="submitter" required size="24"></label>
       <label>Note (optional): <input type="text" name="note" size="40"></label>
-      <button type="submit">Submit classification</button>
+      <button type="submit">Submit classification for all {{ r.n_records }} record{{ "s" if r.n_records != 1 else "" }}</button>
     </form>
   </div>
   {% endfor %}
@@ -1695,29 +1707,42 @@ def triage():
     cur = get_cursor()
     cur.execute(
         """
-        SELECT h.archive_code, a.display_name, h.archive_obs_id, h.archive_url,
-               h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.instrument
+        SELECT h.archive_code, a.display_name,
+               COALESCE(h.raw_target_name, 'obs:' || h.archive_obs_id) AS group_key,
+               h.raw_target_name,
+               count(*) AS n_records,
+               list(h.archive_obs_id) AS archive_obs_ids,
+               list(h.archive_url) AS archive_urls,
+               min(h.raw_ra) AS raw_ra, min(h.raw_dec) AS raw_dec,
+               max(h.updated_at) AS updated_at,
+               min(h.obs_date) AS obs_date,
+               any_value(h.instrument) AS instrument
         FROM spectroscopy_holdings h
         JOIN archives a ON a.archive_code = h.archive_code
         WHERE h.match_status = 'skipped'
-        ORDER BY h.updated_at DESC
+        GROUP BY h.archive_code, a.display_name,
+                 COALESCE(h.raw_target_name, 'obs:' || h.archive_obs_id), h.raw_target_name
+        ORDER BY updated_at DESC
         LIMIT 20
         """
     )
     rows = _rows_as_dicts(cur)
 
     # Cone-search preview, if the contributor just clicked "run live cone
-    # search" for one specific row below (see /triage/cone_search) -- carried
-    # over via a redirect query string (no JS/session state in this sketch).
-    preview_key = (request.args.get("preview_archive_code", ""), request.args.get("preview_archive_obs_id", ""))
+    # search" for one identifier group below (see /triage/cone_search) --
+    # carried over via a redirect query string (no JS/session state in this
+    # sketch).
+    preview_key = (request.args.get("preview_archive_code", ""), request.args.get("preview_group_key", ""))
     preview_result = request.args.get("preview_result", "")
 
     # Existing (not-yet-applied) submissions, so a contributor can see this
-    # row already has other independent votes before adding their own -- read
-    # live from Postgres, since skip_classifications isn't part of the
+    # group already has other independent votes before adding their own --
+    # read live from Postgres, since skip_classifications isn't part of the
     # DuckDB/Parquet snapshot (see _pg_connection's comment above). Degrades
     # gracefully if DATABASE_URL isn't configured in this environment, same
-    # as the SIMBAD-outage handling elsewhere in this file.
+    # as the SIMBAD-outage handling elsewhere in this file. Keyed by the
+    # individual (archive_code, archive_obs_id) natural key the table already
+    # uses -- grouping into per-identifier rows happens below, in Python.
     submissions_by_holding = defaultdict(list)
     pg_error = None
     try:
@@ -1738,14 +1763,19 @@ def triage():
         pg_error = str(exc)
 
     for r in rows:
-        key = (r["archive_code"], r["archive_obs_id"])
-        r["prior_submissions"] = submissions_by_holding.get(key, [])
+        key = (r["archive_code"], r["group_key"])
+        r["records"] = list(zip(r["archive_obs_ids"], r["archive_urls"]))
+        r["prior_submissions"] = [
+            s
+            for oid in r["archive_obs_ids"]
+            for s in submissions_by_holding.get((r["archive_code"], oid), [])
+        ]
         if r["raw_ra"] is not None and r["raw_dec"] is not None:
             r["aladin_url"] = _aladin_lite_url(r["raw_ra"], r["raw_dec"])
             r["simbad_url"] = _simbad_coord_url(r["raw_ra"], r["raw_dec"])
             r["cone_search_url"] = "/triage/cone_search?" + urlencode({
                 "archive_code": r["archive_code"],
-                "archive_obs_id": r["archive_obs_id"],
+                "group_key": r["group_key"],
                 "ra": r["raw_ra"],
                 "dec": r["raw_dec"],
             })
@@ -1763,14 +1793,15 @@ def triage():
 
 @app.route("/triage/cone_search")
 def triage_cone_search():
-    """Live Gaia DR3 cone search for one skipped row -- the gate the design
-    notes require before "confirmed absent from Gaia" can be submitted at
-    all: a human can't reliably eyeball non-detection (Gaia goes to G~21,
-    crowding/saturation effects are easy to misjudge), so this runs the real
-    query and hands the actual result back rather than taking anyone's word.
+    """Live Gaia DR3 cone search for one skipped identifier group -- the gate
+    the design notes require before "confirmed absent from Gaia" can be
+    submitted at all: a human can't reliably eyeball non-detection (Gaia goes
+    to G~21, crowding/saturation effects are easy to misjudge), so this runs
+    the real query and hands the actual result back rather than taking
+    anyone's word.
     """
     archive_code = request.args.get("archive_code", "")
-    archive_obs_id = request.args.get("archive_obs_id", "")
+    group_key = request.args.get("group_key", "")
     try:
         ra = float(request.args.get("ra", ""))
         dec = float(request.args.get("dec", ""))
@@ -1795,7 +1826,7 @@ def triage_cone_search():
 
     return redirect("/triage?" + urlencode({
         "preview_archive_code": archive_code,
-        "preview_archive_obs_id": archive_obs_id,
+        "preview_group_key": group_key,
         "preview_result": summary,
     }))
 
@@ -1803,13 +1834,13 @@ def triage_cone_search():
 @app.route("/triage/submit", methods=["POST"])
 def triage_submit():
     archive_code = request.form.get("archive_code", "").strip()
-    archive_obs_id = request.form.get("archive_obs_id", "").strip()
+    archive_obs_ids = [x.strip() for x in request.form.getlist("archive_obs_ids") if x.strip()]
     outcome = request.form.get("outcome", "").strip()
     submitter = request.form.get("submitter", "").strip()
     note = request.form.get("note", "").strip() or None
 
-    if not archive_code or not archive_obs_id or not submitter:
-        return redirect("/triage?error=" + quote("archive_code, archive_obs_id, and submitter are all required."))
+    if not archive_code or not archive_obs_ids or not submitter:
+        return redirect("/triage?error=" + quote("archive_code, archive_obs_ids, and submitter are all required."))
 
     proposed_gaia_source_id = None
     cone_radius = None
@@ -1848,24 +1879,36 @@ def triage_submit():
 
     try:
         with _pg_connection() as pg_conn, pg_conn.cursor() as pg_cur:
-            pg_cur.execute(
-                """
-                INSERT INTO skip_classifications
+            # One skip_classifications row per underlying archive_obs_id --
+            # the table's natural key stays per-record (see its schema
+            # comment), grouping by identifier is purely a triage-page
+            # presentation choice. ON CONFLICT DO NOTHING so a submitter who
+            # already voted on some of these records (e.g. from an earlier,
+            # differently-sized group) still gets their vote recorded for the
+            # rest, instead of the whole submission failing outright.
+            n_inserted = 0
+            for archive_obs_id in archive_obs_ids:
+                pg_cur.execute(
+                    """
+                    INSERT INTO skip_classifications
+                        (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
+                         gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
+                    """,
                     (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
-                     gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
-                 cone_radius, cone_result, submitter, note),
-            )
-    except psycopg.errors.UniqueViolation:
-        return redirect("/triage?error=" + quote(f"{submitter!r} has already submitted a classification for this row."))
+                     cone_radius, cone_result, submitter, note),
+                )
+                n_inserted += pg_cur.rowcount
     except psycopg.errors.ForeignKeyViolation:
-        return redirect("/triage?error=" + quote("That holding no longer exists, or isn't in the skipped queue."))
+        return redirect("/triage?error=" + quote("One of those holdings no longer exists, or isn't in the skipped queue."))
     except RuntimeError as exc:
         return redirect("/triage?error=" + quote(str(exc)))
 
-    return redirect("/triage?note=" + quote("Submission recorded — thank you."))
+    if n_inserted == 0:
+        return redirect("/triage?error=" + quote(f"{submitter!r} has already submitted a classification for every record under this name."))
+
+    return redirect("/triage?note=" + quote(f"Submission recorded for {n_inserted} record(s) — thank you."))
 
 
 def _apply_skip_classification_if_quorum(pg_conn: psycopg.Connection, archive_code: str, archive_obs_id: str, quorum: int = 2) -> None:
