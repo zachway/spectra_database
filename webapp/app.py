@@ -243,9 +243,9 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool)
     cur = get_cursor()
     cur.execute(
         """
-        SELECT gaia_source_id, ra, dec, phot_g_mean_mag, name_aliases, input_name, sep_deg
+        SELECT gaia_source_id, bsc_hr_number, ra, dec, phot_g_mean_mag, name_aliases, input_name, sep_deg
         FROM (
-            SELECT gaia_source_id, ra, dec, phot_g_mean_mag, name_aliases, input_name,
+            SELECT gaia_source_id, bsc_hr_number, ra, dec, phot_g_mean_mag, name_aliases, input_name,
                 degrees(acos(least(1.0, greatest(-1.0,
                     sin(radians(dec)) * sin(radians(?)) +
                     cos(radians(dec)) * cos(radians(?)) * cos(radians(ra - ?))
@@ -263,6 +263,10 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool)
     for r in rows:
         r["known_as"] = _known_as(r)
         r["sep_arcsec"] = r["sep_deg"] * 3600.0
+        # A BSC5 star with no credible Gaia counterpart has no gaia_source_id
+        # for the click-through ?q= link above to be -- fall back to its HR
+        # number, which this route's own lookup now understands too.
+        r["search_id"] = r["gaia_source_id"] if r["gaia_source_id"] is not None else r["bsc_hr_number"]
 
     if export_csv:
         return _csv_response(
@@ -356,7 +360,7 @@ PAGE_TEMPLATE = """
         <tr><th>Star</th><th>RA</th><th>Dec</th><th>Separation</th><th>G mag</th></tr>
         {% for r in radial_results %}
         <tr>
-          <td><a href="?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td>
+          <td><a href="?q={{ r.search_id }}">{{ r.known_as }}</a></td>
           <td>{{ "%.5f"|format(r.ra) }}</td>
           <td>{{ "%.5f"|format(r.dec) }}</td>
           <td>{{ '%.1f"'|format(r.sep_arcsec) }}</td>
@@ -378,8 +382,13 @@ PAGE_TEMPLATE = """
 
   {% if star %}
     <dl>
+      {% if star.gaia_source_id is not none %}
       <dt>Gaia source_id</dt><dd>{{ star.gaia_source_id }}</dd>
       <dt>SIMBAD</dt><dd><a href="https://simbad.cds.unistra.fr/simbad/sim-id?Ident=Gaia+DR3+{{ star.gaia_source_id }}" target="_blank" rel="noopener">open</a></dd>
+      {% else %}
+      <dt>Gaia source_id</dt><dd>— (no credible Gaia counterpart; tracked via Bright Star Catalogue HR {{ star.bsc_hr_number }})</dd>
+      <dt>SIMBAD</dt><dd><a href="https://simbad.cds.unistra.fr/simbad/sim-id?Ident=HR+{{ star.bsc_hr_number }}" target="_blank" rel="noopener">open</a></dd>
+      {% endif %}
       <dt>RA, Dec</dt><dd>{{ "%.6f"|format(star.ra) }}, {{ "%.6f"|format(star.dec) }}</dd>
       <dt>G mag</dt><dd>{{ star.phot_g_mean_mag if star.phot_g_mean_mag is not none else "—" }}</dd>
       <dt>Gaia RVS</dt><dd>{{ "yes" if star.has_gaia_rvs else "no" }}</dd>
@@ -388,7 +397,7 @@ PAGE_TEMPLATE = """
     </dl>
 
     {% if holdings %}
-      <p><a href="?q={{ star.gaia_source_id }}&amp;format=csv">Download holdings as CSV</a></p>
+      <p><a href="?q={{ star_search_id }}&amp;format=csv">Download holdings as CSV</a></p>
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
         <summary>{{ g.display_name }} — {{ g.instrument or "—" }} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
@@ -469,6 +478,42 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
     )
 
 
+def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | None:
+    """Match `query` against a star already tracked locally -- by
+    gaia_source_id/bsc_hr_number for a numeric query, or by any cached name
+    alias (case-insensitive) otherwise -- before ever going out to SIMBAD.
+
+    This is the only way to find a source_catalog='bsc5' star by name at
+    all: those have no gaia_source_id for resolve_gaia_source_id to resolve
+    to (see db/migrations/0001_star_id_surrogate_key.sql), and for the ~18
+    with zero Gaia sources within 30" (e.g. Arcturus), the external
+    resolution path fails outright rather than just returning a different
+    star. Every BSC5 star does carry a cached "HR <n>" alias (and usually
+    SIMBAD's full alias list) from ingestion time, seeded regardless of
+    whether it has a Gaia counterpart.
+    """
+    if query.isdigit():
+        cur.execute(
+            "SELECT * FROM stars WHERE gaia_source_id = ? OR bsc_hr_number = ?",
+            [int(query), int(query)],
+        )
+        rows = _rows_as_dicts(cur)
+        if rows:
+            return rows[0]
+
+    cur.execute(
+        """
+        SELECT * FROM stars
+        WHERE lower(input_name) = lower(?)
+           OR list_contains(list_transform(COALESCE(name_aliases, []), x -> lower(x)), lower(?))
+        LIMIT 1
+        """,
+        [query, query],
+    )
+    rows = _rows_as_dicts(cur)
+    return rows[0] if rows else None
+
+
 @app.route("/")
 def search():
     query = request.args.get("q", "").strip()
@@ -482,10 +527,12 @@ def search():
     if not query:
         return _blank()
 
+    cur = get_cursor()
     resolved_source_id = None
-    if query.isdigit():
-        source_id = int(query)
-    else:
+    star = _lookup_local_star(cur, query)
+    if star is None:
+        if query.isdigit():
+            return _blank(query=query, error=f"No tracked star with source_id {query}.")
         try:
             source_id = resolve_gaia_source_id(query)
         except DALServiceError:
@@ -497,16 +544,23 @@ def search():
             return _blank(query=query, error=str(e))
         resolved_source_id = source_id
 
-    cur = get_cursor()
-    cur.execute("SELECT * FROM stars WHERE gaia_source_id = ?", [source_id])
-    rows = _rows_as_dicts(cur)
-    star = rows[0] if rows else None
-    if star is None:
-        return _blank(
-            query=query,
-            error=f"No tracked star with source_id {source_id}.",
-            resolved_source_id=resolved_source_id,
-        )
+        cur.execute("SELECT * FROM stars WHERE gaia_source_id = ?", [source_id])
+        rows = _rows_as_dicts(cur)
+        star = rows[0] if rows else None
+        if star is None:
+            return _blank(
+                query=query,
+                error=f"No tracked star with source_id {source_id}.",
+                resolved_source_id=resolved_source_id,
+            )
+
+    # gaia_source_id is purely a display value from here on -- it can
+    # legitimately be NULL for a source_catalog='bsc5' star (same reasoning
+    # as timeplots', see 751327c). star_search_id is what round-trips back
+    # through this same route's own ?q= lookup (bsc_hr_number for a BSC5
+    # star, since it has no gaia_source_id for that to be).
+    source_id = star["gaia_source_id"]
+    star_search_id = source_id if source_id is not None else star["bsc_hr_number"]
 
     cur.execute(
         """
@@ -532,13 +586,13 @@ def search():
             ["query", "source_id", "status", "known_as",
              "archive", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
             raw_holdings,
-            f"spectra_database_holdings_{source_id}.csv",
+            f"spectra_database_holdings_{source_id if source_id is not None else star['star_id']}.csv",
         )
 
     holdings = _group_holdings(raw_holdings)
 
     return render_template_string(
-        PAGE_TEMPLATE, query=query, star=star, holdings=holdings,
+        PAGE_TEMPLATE, query=query, star=star, holdings=holdings, star_search_id=star_search_id,
         error=None, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
