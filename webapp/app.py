@@ -862,7 +862,7 @@ def timeplots():
     # top-5 selection here in Python, which meant sorted() over the full
     # (multi-million-star) population once per period — confirmed live as
     # what was actually OOMing the Cloud Run container, not the raw GROUP BY.
-    cur.execute("SELECT gaia_source_id, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY gaia_source_id, yr, half")
+    cur.execute("SELECT star_id, gaia_source_id, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY star_id, yr, half")
     rows = _rows_as_dicts(cur)
 
     period_labels: list[str] = []
@@ -873,29 +873,45 @@ def timeplots():
         period_keys = sorted({(r["yr"], r["half"]) for r in rows})
         period_labels = [f"{yr} H{half}" for yr, half in period_keys]
 
+        # Grouped by star_id, not gaia_source_id: a small number of BSC5-
+        # sourced stars (bright naked-eye stars with no credible Gaia
+        # counterpart -- see db/migrations/0001_star_id_surrogate_key.sql)
+        # have a NULL gaia_source_id, which broke both of these -- sorted()
+        # can't order None against int (confirmed live, 500ing every request
+        # once one such star cracked a top-N list), and even fixed up, every
+        # NULL-gaia_source_id star would collide on the same dict key and
+        # stomp each other's data. star_id is the one identifier every
+        # tracked star always has.
         by_star: dict[int, dict] = defaultdict(dict)
         labels_by_id: dict[int, str] = {}
+        gaia_id_by_star: dict[int, int | None] = {}
         for r in rows:
-            by_star[r["gaia_source_id"]][(r["yr"], r["half"])] = r
-            labels_by_id[r["gaia_source_id"]] = r["label"]
+            by_star[r["star_id"]][(r["yr"], r["half"])] = r
+            labels_by_id[r["star_id"]] = r["label"]
+            gaia_id_by_star[r["star_id"]] = r["gaia_source_id"]
 
-        for gid in sorted(by_star):
-            by_period = by_star[gid]
+        for sid in sorted(by_star):
+            by_period = by_star[sid]
             # Gaia source_ids are 19-digit integers, well past JS's 53-bit
             # safe-integer range — serialized as a string so a click-through
             # can't get silently rounded by the browser (same issue fixed
-            # for the CMD/Sky Map click-throughs).
-            source_id = str(gid)
+            # for the CMD/Sky Map click-throughs). BSC5 stars have no
+            # gaia_source_id at all, so their click-through source_id is the
+            # literal string "None" -- same (already-existing) fallback
+            # cmd_stars/sky_sample use, not a new gap: clicking shows "no
+            # tracked star" rather than resolving, since there's no
+            # search-by-star_id or search-by-HR-number path yet.
+            source_id = str(gaia_id_by_star[sid])
             cumulative_traces.append(
                 {
-                    "label": labels_by_id[gid],
+                    "label": labels_by_id[sid],
                     "source_id": source_id,
                     "counts": [by_period[k]["cumulative_n"] if k in by_period else None for k in period_keys],
                 }
             )
             period_traces.append(
                 {
-                    "label": labels_by_id[gid],
+                    "label": labels_by_id[sid],
                     "source_id": source_id,
                     "counts": [by_period[k]["within_n"] if k in by_period else None for k in period_keys],
                 }

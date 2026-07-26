@@ -219,6 +219,7 @@ grid AS (
     FROM cast_stars cs CROSS JOIN periods p
 )
 SELECT
+    s.star_id,
     s.gaia_source_id,
     COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS label,
     g.yr, g.half,
@@ -228,7 +229,7 @@ FROM grid g
 LEFT JOIN leaderboard_top_period tp USING (star_id, yr, half)
 LEFT JOIN leaderboard_top_cum tc USING (star_id, yr, half)
 JOIN pg.stars s ON s.star_id = g.star_id
-ORDER BY s.gaia_source_id, g.yr, g.half
+ORDER BY s.star_id, g.yr, g.half
 """
 
 
