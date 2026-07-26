@@ -49,7 +49,7 @@ from astropy.coordinates import SkyCoord
 from flask import Flask, Response, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
-from ingest.add_star import _launch_gaia_job, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
+from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
 
 app = Flask(__name__)
 
@@ -1821,13 +1821,22 @@ TRIAGE_TEMPLATE = """
         <input type="text" name="gaia_target" placeholder="Gaia source_id or star name" size="28">
       </label>
 
+      <label><input type="radio" name="outcome" value="attach_bright_star">
+        Attach to bright star (too bright for Gaia to have detected at all):
+        <input type="text" name="bright_star_target" placeholder="Bright Star (HR) number or star name" size="28">
+      </label>
+
       <label><input type="radio" name="outcome" value="not_a_real_target">
-        Confirmed — not a real target (calibration frame, engineering exposure, non-stellar)
+        Confirmed — not a real target (calibration frame, engineering exposure, etc.)
+      </label>
+
+      <label><input type="radio" name="outcome" value="not_a_star">
+        Not a star (galaxy, quasar, Solar System object, or other non-stellar target)
       </label>
 
       <label>
         <input type="radio" name="outcome" value="confirmed_absent_from_gaia" {% if not r.aladin_url %}disabled{% endif %}>
-        Confirmed — real target, genuinely absent from Gaia
+        Confirmed — real star, no Gaia DR3 source found nearby (and not a known bright star)
         {% if r.aladin_url %}
           (<a href="{{ r.cone_search_url }}">run live {{ '%g'|format(triage_cone_search_radius) }}&Prime; Gaia cone search to confirm</a>)
         {% endif %}
@@ -1869,7 +1878,7 @@ def triage():
         SELECT archive_code, display_name, group_key, raw_target_name, n_records,
                archive_obs_ids, archive_urls, raw_ra, raw_dec, obs_date, instrument, updated_at
         FROM triage_queue
-        ORDER BY (raw_target_name IS NOT NULL) DESC, updated_at DESC
+        ORDER BY (raw_target_name IS NOT NULL) DESC, n_records DESC
         LIMIT 20
         """
     )
@@ -1982,6 +1991,7 @@ def triage_submit():
         return redirect("/triage?error=" + quote("archive_code, a target identifier, and submitter are all required."))
 
     proposed_gaia_source_id = None
+    proposed_bsc_hr_number = None
     cone_radius = None
     cone_result = None
 
@@ -2004,6 +2014,21 @@ def triage_submit():
             except (ValueError, DALServiceError) as exc:
                 return redirect("/triage?error=" + quote(f"Could not resolve {target!r}: {exc}"))
 
+    elif outcome == "attach_bright_star":
+        target = request.form.get("bright_star_target", "").strip()
+        if not target:
+            return redirect("/triage?error=" + quote("Enter a Bright Star (HR) number or star name to attach."))
+        if target.isdigit():
+            proposed_bsc_hr_number = int(target)
+        else:
+            # Same SIMBAD-first resolution pattern as attach_gaia_source
+            # above, just resolving an HR number instead of a Gaia source_id
+            # -- see ingest.add_star.resolve_bsc_hr_number.
+            try:
+                proposed_bsc_hr_number = resolve_bsc_hr_number(target)
+            except ValueError as exc:
+                return redirect("/triage?error=" + quote(f"Could not resolve {target!r}: {exc}"))
+
     elif outcome == "confirmed_absent_from_gaia":
         cone_result = request.form.get("gaia_cone_search_result", "").strip()
         radius_raw = request.form.get("gaia_cone_search_radius_arcsec", "").strip()
@@ -2013,7 +2038,7 @@ def triage_submit():
             ))
         cone_radius = float(radius_raw)
 
-    elif outcome != "not_a_real_target":
+    elif outcome not in ("not_a_real_target", "not_a_star"):
         return redirect("/triage?error=" + quote("Unrecognized outcome."))
 
     # archive_obs_id/raw_target_name pass through as-is (either the specific
@@ -2026,6 +2051,7 @@ def triage_submit():
         "archive_code": archive_code,
         "outcome": outcome,
         "proposed_gaia_source_id": proposed_gaia_source_id,
+        "proposed_bsc_hr_number": proposed_bsc_hr_number,
         "gaia_cone_search_radius_arcsec": cone_radius,
         "gaia_cone_search_result": cone_result,
         "submitter": submitter,
