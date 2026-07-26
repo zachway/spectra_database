@@ -35,6 +35,7 @@ import csv
 import io
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from collections import defaultdict
@@ -479,19 +480,41 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
     )
 
 
+# SIMBAD's own "ids" field -- what a source_catalog='bsc5' star added via
+# add_bsc_star gets its name_aliases from verbatim (see ingest.add_star) --
+# doesn't use bare common names: Arcturus shows up as "NAME Arcturus", and
+# its Bayer designation as "* alf Boo". It's also inconsistently spaced --
+# "HR  5340", two spaces, not "HR 5340" -- unlike the Gaia-path seeding in
+# scripts/seed_bright_star_catalog.py, which does add an exact "HR <n>"
+# alias but only for stars resolved to a gaia_source_id. Confirmed live:
+# without this normalization, searching "Arcturus" (a real production BSC5
+# star) fell through to external SIMBAD/Gaia resolution and 404'd, because
+# neither of its cached aliases match that string exactly.
+_NAME_PREFIX_RE = re.compile(r"^(NAME|\*)\s+", re.IGNORECASE)
+
+
+def _normalize_star_name(s: str) -> str:
+    return re.sub(r"\s+", " ", _NAME_PREFIX_RE.sub("", s.strip())).lower()
+
+
+# Same normalization applied DB-side to input_name/name_aliases, so a
+# lookup can compare against an already-normalized query parameter instead
+# of re-deriving it per row.
+_NORMALIZE_SQL = r"lower(regexp_replace(regexp_replace(trim({col}), '^(NAME|\*)\s+', '', 'i'), '\s+', ' ', 'g'))"
+
+
 def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | None:
     """Match `query` against a star already tracked locally -- by
     gaia_source_id/bsc_hr_number for a numeric query, or by any cached name
-    alias (case-insensitive) otherwise -- before ever going out to SIMBAD.
+    alias (case- and formatting-insensitive, see _normalize_star_name)
+    otherwise -- before ever going out to SIMBAD.
 
     This is the only way to find a source_catalog='bsc5' star by name at
     all: those have no gaia_source_id for resolve_gaia_source_id to resolve
     to (see db/migrations/0001_star_id_surrogate_key.sql), and for the ~18
     with zero Gaia sources within 30" (e.g. Arcturus), the external
     resolution path fails outright rather than just returning a different
-    star. Every BSC5 star does carry a cached "HR <n>" alias (and usually
-    SIMBAD's full alias list) from ingestion time, seeded regardless of
-    whether it has a Gaia counterpart.
+    star.
     """
     if query.isdigit():
         cur.execute(
@@ -502,14 +525,18 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
         if rows:
             return rows[0]
 
+    normalized_query = _normalize_star_name(query)
     cur.execute(
-        """
+        f"""
         SELECT * FROM stars
-        WHERE lower(input_name) = lower(?)
-           OR list_contains(list_transform(COALESCE(name_aliases, []), x -> lower(x)), lower(?))
+        WHERE {_NORMALIZE_SQL.format(col="input_name")} = ?
+           OR list_contains(
+                list_transform(COALESCE(name_aliases, []), x -> {_NORMALIZE_SQL.format(col="x")}),
+                ?
+              )
         LIMIT 1
         """,
-        [query, query],
+        [normalized_query, normalized_query],
     )
     rows = _rows_as_dicts(cur)
     return rows[0] if rows else None
