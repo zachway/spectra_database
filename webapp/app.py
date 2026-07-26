@@ -435,7 +435,7 @@ PAGE_TEMPLATE = """
       {% for r in batch_results %}
       <tr>
         <td>{{ r.query }}</td>
-        <td>{% if r.source_id %}<a href="?q={{ r.source_id }}">{{ r.source_id }}</a>{% else %}—{% endif %}</td>
+        <td>{% if r.source_id %}<a href="/?q={{ r.source_id }}">{{ r.source_id }}</a>{% else %}—{% endif %}</td>
         <td>{{ r.status }}</td>
         <td>{{ r.known_as or "—" }}</td>
         <td>{{ r.holdings_count if r.holdings_count is not none else "—" }}</td>
