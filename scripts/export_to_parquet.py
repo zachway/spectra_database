@@ -465,13 +465,15 @@ SELECT
     any_value(instrument) AS instrument
 FROM ranked
 GROUP BY archive_code, display_name, group_key
--- Named groups first, recency as the tiebreaker within each bucket -- a
+-- Named groups first, then largest group first within each bucket -- a
 -- human can actually look a reported name up and make a judgment call,
 -- unlike an anonymous calibration-frame/no-name record, so named groups are
--- higher-value to surface. This ordering determines the LIMIT selection
--- itself, not just display order -- otherwise a burst of recent nameless
--- activity (e.g. a big LAMOST MRS sync) could crowd every named group out
--- of the top {TRIAGE_QUEUE_TOP_N} entirely before webapp.app ever sees them.
+-- higher-value to surface; within that, a name attached to more records is
+-- higher-value still, since one classification resolves all of them at
+-- once. This ordering determines the LIMIT selection itself, not just
+-- display order -- otherwise a burst of recent nameless activity (e.g. a
+-- big LAMOST MRS sync) could crowd every named group out of the top
+-- {TRIAGE_QUEUE_TOP_N} entirely before webapp.app ever sees them.
 --
 -- Repeats the NULLIF(TRIM(any_value(...))) expression rather than
 -- referencing the `raw_target_name` output alias -- confirmed live that
@@ -481,7 +483,7 @@ GROUP BY archive_code, display_name, group_key
 -- "column must appear in the GROUP BY clause or be part of an aggregate
 -- function." Wrapping the same expression in an aggregate again here
 -- sidesteps the ambiguity entirely.
-ORDER BY (NULLIF(TRIM(any_value(raw_target_name)), '') IS NOT NULL) DESC, updated_at DESC
+ORDER BY (NULLIF(TRIM(any_value(raw_target_name)), '') IS NOT NULL) DESC, count(*) DESC
 LIMIT {TRIAGE_QUEUE_TOP_N}
 """
 
@@ -605,7 +607,11 @@ def export_tables(database_url: str, out_dir: str) -> None:
 TRIAGE_SUBMISSIONS_FILENAME = "triage_submissions.jsonl"
 
 REQUIRED_TRIAGE_FIELDS = {"archive_code", "outcome", "submitter", "submitted_at"}
-ALLOWED_TRIAGE_OUTCOMES = {"attach_gaia_source", "not_a_real_target", "confirmed_absent_from_gaia"}
+ALLOWED_TRIAGE_OUTCOMES = {
+    "attach_gaia_source", "attach_bright_star",
+    "not_a_real_target", "not_a_star",
+    "confirmed_absent_from_gaia",
+}
 
 
 def import_triage_submissions(database_url: str, out_dir: str) -> None:
@@ -646,6 +652,12 @@ def import_triage_submissions(database_url: str, out_dir: str) -> None:
                 continue
 
             raw_target_name = (obj.get("raw_target_name") or "").strip()
+            # .get() rather than a bare key, so a line written before
+            # proposed_bsc_hr_number existed (attach_bright_star wasn't a
+            # valid outcome yet) still binds cleanly instead of KeyError-ing
+            # this whole line's cur.execute() -- same reasoning as the
+            # REQUIRED_TRIAGE_FIELDS comment above.
+            params = {**obj, "raw_target_name": raw_target_name, "proposed_bsc_hr_number": obj.get("proposed_bsc_hr_number")}
             try:
                 if raw_target_name:
                     # Expands one vote-by-name into every record the *live*
@@ -658,29 +670,31 @@ def import_triage_submissions(database_url: str, out_dir: str) -> None:
                         """
                         INSERT INTO skip_classifications
                             (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
-                             gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note, submitted_at)
+                             proposed_bsc_hr_number, gaia_cone_search_radius_arcsec,
+                             gaia_cone_search_result, submitter, note, submitted_at)
                         SELECT h.archive_code, h.archive_obs_id, %(outcome)s, %(proposed_gaia_source_id)s,
-                               %(gaia_cone_search_radius_arcsec)s, %(gaia_cone_search_result)s,
-                               %(submitter)s, %(note)s, %(submitted_at)s
+                               %(proposed_bsc_hr_number)s, %(gaia_cone_search_radius_arcsec)s,
+                               %(gaia_cone_search_result)s, %(submitter)s, %(note)s, %(submitted_at)s
                         FROM spectroscopy_holdings h
                         WHERE h.archive_code = %(archive_code)s AND h.match_status = 'skipped'
                           AND NULLIF(TRIM(h.raw_target_name), '') = %(raw_target_name)s
                         ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
                         """,
-                        {**obj, "raw_target_name": raw_target_name},
+                        params,
                     )
                 else:
                     cur.execute(
                         """
                         INSERT INTO skip_classifications
                             (archive_code, archive_obs_id, outcome, proposed_gaia_source_id,
-                             gaia_cone_search_radius_arcsec, gaia_cone_search_result, submitter, note, submitted_at)
+                             proposed_bsc_hr_number, gaia_cone_search_radius_arcsec,
+                             gaia_cone_search_result, submitter, note, submitted_at)
                         VALUES (%(archive_code)s, %(archive_obs_id)s, %(outcome)s, %(proposed_gaia_source_id)s,
-                                %(gaia_cone_search_radius_arcsec)s, %(gaia_cone_search_result)s,
-                                %(submitter)s, %(note)s, %(submitted_at)s)
+                                %(proposed_bsc_hr_number)s, %(gaia_cone_search_radius_arcsec)s,
+                                %(gaia_cone_search_result)s, %(submitter)s, %(note)s, %(submitted_at)s)
                         ON CONFLICT (archive_code, archive_obs_id, submitter) DO NOTHING
                         """,
-                        obj,
+                        params,
                     )
             except psycopg.Error as exc:
                 logger.warning("skipping submission Postgres rejected (%s): %r", exc, obj)
@@ -710,16 +724,19 @@ def _apply_skip_classification_if_quorum(pg_conn: psycopg.Connection, archive_co
         fetch-and-track the star if it isn't already tracked, then UPDATE the
         matching spectroscopy_holdings row to that star with
         match_status='matched', match_method='manual'.
-      - not_a_real_target: UPDATE spectroscopy_holdings.match_status =
+      - attach_bright_star: call ingest.add_star.add_bsc_star(pg_conn,
+        proposed_bsc_hr_number, input_name=...) (see add_star.py:275) --
+        same idea as attach_gaia_source, but for a naked-eye star Gaia never
+        saw, tracked via bsc_hr_number instead of gaia_source_id.
+      - not_a_real_target / not_a_star: UPDATE spectroscopy_holdings.match_status =
         'rejected' (already a valid value in the match_status CHECK
-        constraint -- see db/schema.sql).
+        constraint -- see db/schema.sql). Both are terminal in the same way;
+        kept as separate outcomes only so the vote itself stays informative
+        (junk data vs. a real non-stellar object) rather than for any
+        difference in how they're applied here.
       - confirmed_absent_from_gaia: no spectroscopy_holdings change (there's
         genuinely no gaia_source_id/star to assign) -- just mark applied so
-        the row stops resurfacing in the /triage queue. May eventually want
-        its own terminal handling once the separate BSC/alternate-identifier
-        migration (in flight concurrently, see project notes) lands and a
-        star row can exist without a gaia_source_id at all -- out of scope
-        here.
+        the row stops resurfacing in the /triage queue.
       - Mark every skip_classifications row for this holding applied_at =
         now(), not just the winning outcome's rows, so disagreeing/minority
         submissions don't linger as "pending" forever once a decision is made.

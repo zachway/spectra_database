@@ -272,6 +272,26 @@ BSC5_SIMBAD_FIELDS = ("ids", "ra", "dec", "pmra", "pmdec", "plx_value")
 BSC5_REF_EPOCH = 1991.25
 
 
+def resolve_bsc_hr_number(name: str) -> int:
+    """Resolve a star name to its Bright Star (Harvard Revised) catalog
+    number via SIMBAD -- the add_bsc_star counterpart to resolve_gaia_
+    source_id above, for naked-eye stars Gaia never saw at all. No positional
+    fallback: unlike a Gaia DR3 source_id, an HR number isn't something a
+    cone search can produce -- SIMBAD carrying the identifier is the only
+    path in.
+    """
+    simbad = Simbad()
+    simbad.add_votable_fields("ids")
+    result = simbad.query_object(name)
+    if result is None or len(result) == 0:
+        raise ValueError(f"could not resolve {name!r} via SIMBAD")
+
+    hr_tokens = [tok for tok in result["ids"][0].split("|") if tok.startswith("HR ")]
+    if not hr_tokens:
+        raise ValueError(f"{name!r} resolved via SIMBAD but has no Bright Star (HR) catalog number")
+    return int(hr_tokens[0].removeprefix("HR "))
+
+
 def add_bsc_star(conn: psycopg.Connection, hr_number: int, input_name: str | None = None) -> dict:
     """Register a star with no Gaia source_id at all, via its Bright Star
     (Harvard Revised) catalog number -- see BSC5_SIMBAD_FIELDS above for why

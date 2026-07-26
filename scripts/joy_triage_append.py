@@ -48,7 +48,11 @@ import json
 import sys
 
 REQUIRED_FIELDS = {"archive_code", "outcome", "submitter", "submitted_at"}
-ALLOWED_OUTCOMES = {"attach_gaia_source", "not_a_real_target", "confirmed_absent_from_gaia"}
+ALLOWED_OUTCOMES = {
+    "attach_gaia_source", "attach_bright_star",
+    "not_a_real_target", "not_a_star",
+    "confirmed_absent_from_gaia",
+}
 
 
 def validate(obj: object) -> str | None:
@@ -63,6 +67,8 @@ def validate(obj: object) -> str | None:
         return "exactly one of raw_target_name/archive_obs_id is required"
     if obj["outcome"] == "attach_gaia_source" and obj.get("proposed_gaia_source_id") is None:
         return "attach_gaia_source requires proposed_gaia_source_id"
+    if obj["outcome"] == "attach_bright_star" and obj.get("proposed_bsc_hr_number") is None:
+        return "attach_bright_star requires proposed_bsc_hr_number"
     if obj["outcome"] == "confirmed_absent_from_gaia" and not obj.get("gaia_cone_search_result"):
         return "confirmed_absent_from_gaia requires gaia_cone_search_result"
     return None

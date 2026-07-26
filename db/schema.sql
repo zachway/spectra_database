@@ -210,8 +210,8 @@ CREATE TABLE skip_classifications (
     FOREIGN KEY (archive_code, archive_obs_id)
         REFERENCES spectroscopy_holdings (archive_code, archive_obs_id),
 
-    -- The three fixed outcomes from the crowdsourced-triage design -- NOT
-    -- free text, so submissions stay auditable/aggregable for the quorum step:
+    -- The fixed outcomes from the crowdsourced-triage design -- NOT free
+    -- text, so submissions stay auditable/aggregable for the quorum step:
     --   attach_gaia_source       -- contributor identified a real Gaia DR3
     --                                source_id for this target (may or may
     --                                not already be tracked in `stars` --
@@ -219,19 +219,39 @@ CREATE TABLE skip_classifications (
     --                                ingest.add_star.add_star(), which
     --                                fetches-and-inserts on demand, see the
     --                                TODO in webapp/app.py).
-    --   not_a_real_target         -- calibration frame, engineering exposure,
-    --                                non-stellar object, etc. Terminal --
-    --                                should stop resurfacing in the queue
-    --                                once applied.
-    --   confirmed_absent_from_gaia -- a genuine target that just isn't in
-    --                                Gaia at all (saturates at G~21, e.g.
-    --                                Arcturus). Requires a live Gaia cone
-    --                                search at submission time, not just the
-    --                                contributor's say-so -- see
+    --   attach_bright_star        -- contributor identified this as a naked-
+    --                                eye star too bright for Gaia to have
+    --                                seen at all (saturates at G~3, e.g.
+    --                                Arcturus/HR 5340). Tracked via a Bright
+    --                                Star (Harvard Revised) catalog number
+    --                                instead of a Gaia source_id -- applying
+    --                                this outcome should go through
+    --                                ingest.add_star.add_bsc_star().
+    --   not_a_real_target         -- calibration frame, engineering
+    --                                exposure, or other non-target artifact
+    --                                -- not a real astronomical object at
+    --                                all. Terminal -- should stop
+    --                                resurfacing in the queue once applied.
+    --   not_a_star                -- a real astronomical object, but not a
+    --                                star (galaxy, quasar, Solar System
+    --                                body, etc.), so it will never have a
+    --                                Gaia source_id or a place in `stars`.
+    --                                Terminal, same as not_a_real_target.
+    --   confirmed_absent_from_gaia -- a genuine star that just doesn't
+    --                                appear in this project's own Gaia-
+    --                                sourced `stars` table, and isn't a
+    --                                known bright star either -- checked via
+    --                                a live cone search against the full
+    --                                Gaia DR3 catalog at submission time,
+    --                                not just the contributor's say-so, but
+    --                                only within gaia_cone_search_radius_arcsec
+    --                                of the reported position -- see
     --                                gaia_cone_search_result below.
     outcome                      TEXT NOT NULL CHECK (outcome IN (
                                      'attach_gaia_source',
+                                     'attach_bright_star',
                                      'not_a_real_target',
+                                     'not_a_star',
                                      'confirmed_absent_from_gaia'
                                  )),
 
@@ -239,6 +259,15 @@ CREATE TABLE skip_classifications (
     proposed_gaia_source_id       BIGINT,
     CHECK (
         (outcome = 'attach_gaia_source') = (proposed_gaia_source_id IS NOT NULL)
+    ),
+
+    -- Required for, and only meaningful for, outcome = 'attach_bright_star'
+    -- -- the Yale Bright Star (Harvard Revised) catalog number, resolved via
+    -- ingest.add_star.resolve_bsc_hr_number() the same way proposed_gaia_
+    -- source_id is resolved for attach_gaia_source.
+    proposed_bsc_hr_number        INTEGER,
+    CHECK (
+        (outcome = 'attach_bright_star') = (proposed_bsc_hr_number IS NOT NULL)
     ),
 
     -- Required for, and only meaningful for, outcome = 'confirmed_absent_from_gaia'
