@@ -335,6 +335,7 @@ PAGE_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <p class="note">A numeric search is interpreted as a Gaia source_id or a Bright Star Catalogue (HR) number.</p>
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit">Search</button>
