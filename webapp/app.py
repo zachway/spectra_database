@@ -2294,6 +2294,8 @@ TRIAGE_TEMPLATE = """
   <h1>Spectra Database</h1>""" + NAV_HTML + """
   <h2>Triage: skipped records</h2>
   <img class="mood-image" src="/static/triage_mood.jpg" alt="how the triage queue feels sometimes">
+  <p class="note">Triaging as <b>{{ submitter }}</b> (<a href="/triage?change_submitter=1">not you?</a>) --
+    records you've already submitted a classification for are filtered out of your queue below.</p>
   <p class="note">
     These are spectroscopy_holdings rows with match_status = 'skipped' -- the
     automated matcher (see <a href="/info">More Info</a>) found no name or
@@ -2415,6 +2417,32 @@ TRIAGE_TEMPLATE = """
 """
 
 
+TRIAGE_GATE_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — Triage</title>
+  <style>""" + SHARED_STYLE + """</style>
+</head>
+<body>
+  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <h2>Triage: skipped records</h2>
+  <p class="note">
+    Enter the name/handle you'll be submitting classifications under. It's
+    remembered in a cookie on this browser (~6 months) and used to filter
+    your queue below so you're not shown records you've already classified
+    in a previous session.
+  </p>
+  <form method="get" action="/triage">
+    <label>Name/handle: <input type="text" name="submitter" required size="24" autofocus></label>
+    <button type="submit">Start triaging</button>
+  </form>
+</body>
+</html>
+"""
+
+
 TRIAGE_SUBMITTER_COOKIE = "triage_submitter"
 TRIAGE_SEED_COOKIE = "triage_seed"
 TRIAGE_COOKIE_MAX_AGE_SECONDS = 180 * 24 * 3600  # ~6 months
@@ -2461,6 +2489,27 @@ def _shuffle_triage_pool(pool: list[dict], seed: str) -> list[dict]:
 
 @app.route("/triage")
 def triage():
+    # Step 1 of 2: who's triaging. A submitter name/handle used to only get
+    # collected per-submission (at the bottom of each row's form, prefilled
+    # from TRIAGE_SUBMITTER_COOKIE) -- nothing gated entry on it, and every
+    # fresh /triage load reset to offset=0 in this visitor's shuffled queue
+    # regardless, so a returning contributor landed back at the top of the
+    # same sequence and re-saw records they'd already classified last
+    # session (still sitting in triage_queue until the next export/import
+    # cycle removes them). Gating on a name up front, then filtering the
+    # pool below by that name's own submission history, fixes both: no
+    # queue is shown until we know who's asking, and the queue we do show
+    # excludes anything that submitter already voted on.
+    gate_submitter = request.args.get("submitter", "").strip()
+    if gate_submitter:
+        resp = redirect("/triage")
+        resp.set_cookie(TRIAGE_SUBMITTER_COOKIE, gate_submitter, max_age=TRIAGE_COOKIE_MAX_AGE_SECONDS, samesite="Lax")
+        return resp
+
+    submitter = request.cookies.get(TRIAGE_SUBMITTER_COOKIE, "").strip()
+    if not submitter or request.args.get("change_submitter"):
+        return Response(render_template_string(TRIAGE_GATE_TEMPLATE, active_tab="triage"))
+
     cur = get_cursor()
     # Reads the precomputed triage_queue table (see
     # scripts/export_to_parquet.py's TRIAGE_QUEUE_QUERY) rather than grouping
@@ -2484,6 +2533,33 @@ def triage():
     )
     pool = _rows_as_dicts(cur)
 
+    # Submission history, so a contributor can see this identifier already
+    # has other independent votes before adding their own -- read from the
+    # same public JSONL file _append_triage_submission writes to (see its
+    # comment), grouped the same way triage_queue's group_key is: this
+    # process has no way to know skip_classifications.applied_at (it never
+    # touches Postgres at all), so this shows every submission ever made
+    # under a name, not just ones not yet applied.
+    submissions, submissions_error = _fetch_triage_submissions()
+    submissions_by_group = defaultdict(list)
+    for s in submissions:
+        name = (s.get("raw_target_name") or "").strip()
+        group_key = name if name else f"obs:{s.get('archive_obs_id')}"
+        submissions_by_group[(s.get("archive_code"), group_key)].append(s)
+
+    # Step 2 of 2: filter out anything this submitter already voted on.
+    # Case-insensitive/trimmed compare since "handle" is free text, not an
+    # account -- catches the common "Zach" vs "zach" variance without
+    # requiring an exact match.
+    submitter_key = submitter.casefold()
+    pool = [
+        r for r in pool
+        if not any(
+            (s.get("submitter") or "").strip().casefold() == submitter_key
+            for s in submissions_by_group.get((r["archive_code"], r["group_key"]), [])
+        )
+    ]
+
     seed = request.cookies.get(TRIAGE_SEED_COOKIE) or secrets.token_hex(8)
     ordered = _shuffle_triage_pool(pool, seed)
     total = len(ordered)
@@ -2506,20 +2582,6 @@ def triage():
     preview_key = (request.args.get("preview_archive_code", ""), request.args.get("preview_group_key", ""))
     preview_result = request.args.get("preview_result", "")
 
-    # Submission history, so a contributor can see this identifier already
-    # has other independent votes before adding their own -- read from the
-    # same public JSONL file _append_triage_submission writes to (see its
-    # comment), grouped the same way triage_queue's group_key is: this
-    # process has no way to know skip_classifications.applied_at (it never
-    # touches Postgres at all), so this shows every submission ever made
-    # under a name, not just ones not yet applied.
-    submissions, submissions_error = _fetch_triage_submissions()
-    submissions_by_group = defaultdict(list)
-    for s in submissions:
-        name = (s.get("raw_target_name") or "").strip()
-        group_key = name if name else f"obs:{s.get('archive_obs_id')}"
-        submissions_by_group[(s.get("archive_code"), group_key)].append(s)
-
     for r in rows:
         key = (r["archive_code"], r["group_key"])
         r["prior_submissions"] = submissions_by_group.get(key, [])
@@ -2539,11 +2601,11 @@ def triage():
             r["cone_search_result"] = None
 
     resp = Response(render_template_string(
-        TRIAGE_TEMPLATE, active_tab="triage", rows=rows,
+        TRIAGE_TEMPLATE, active_tab="triage", rows=rows, submitter=submitter,
         error=request.args.get("error"), note=request.args.get("note"),
         submissions_error=submissions_error, triage_cone_search_radius=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC,
         offset=offset, total=total, skip_query=urlencode({"offset": offset + 1}),
-        submitter_prefill=request.cookies.get(TRIAGE_SUBMITTER_COOKIE, ""),
+        submitter_prefill=submitter,
     ))
     if request.cookies.get(TRIAGE_SEED_COOKIE) != seed:
         resp.set_cookie(TRIAGE_SEED_COOKIE, seed, max_age=TRIAGE_COOKIE_MAX_AGE_SECONDS, samesite="Lax")
