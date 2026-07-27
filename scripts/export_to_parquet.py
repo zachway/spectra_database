@@ -545,7 +545,18 @@ def export_tables(database_url: str, out_dir: str) -> None:
         con.execute(f"ATTACH '{database_url}' AS pg (TYPE postgres, READ_ONLY)")
         for table in TABLES:
             path = os.path.join(out_dir, f"{table}.parquet")
-            _atomic_copy(con, f"SELECT * FROM pg.{table}", path)
+            select_sql = f"SELECT * FROM pg.{table}"
+            if table == "spectroscopy_holdings":
+                # webapp.app's single-star search filters this table on
+                # star_id over httpfs -- confirmed live that an unclustered
+                # export means Parquet's row-group min/max stats can't skip
+                # anything on that filter, so a lookup pulls a large chunk
+                # of this (now >1GB) file into memory and tipped the Cloud
+                # Run container's 1GiB limit into repeated OOM kills.
+                # Exporting pre-sorted by star_id lets row-group pruning
+                # actually work for that query, independent of table size.
+                select_sql += " ORDER BY star_id"
+            _atomic_copy(con, select_sql, path)
             logger.info("exported %s -> %s", table, path)
 
         leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
