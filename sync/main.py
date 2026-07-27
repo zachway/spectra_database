@@ -46,7 +46,9 @@ from sync.archives import (
     gemini,
     gemini_ghost,
     gemini_igrins,
+    gtc,
     harpsn_tng,
+    hermes_mercator,
     ing,
     koa,
     lamost,
@@ -103,6 +105,8 @@ ARCHIVES = {
     "ing": ing.fetch,
     "naoj": naoj.fetch,
     "oirsa": oirsa.fetch,
+    "gtc": gtc.fetch,
+    "hermes_mercator": hermes_mercator.fetch,
 }
 
 

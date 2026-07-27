@@ -26,8 +26,8 @@ export DATABASE_URL="postgresql:///spectra_db?host=/tmp"
 # required for gemini_ghost/gemini_igrins, see sync/archives/_goa_common.py.
 
 GROUP_A=(rave dao koa lick sdss_v_apogee carmenes_caha asiago salt_hrs)
-GROUP_B=(galah gemini lamost mast sdss_v_optical desi harpsn_tng ing)
-GROUP_C=(eso gemini_ghost lamost_mrs mast_jwst sdss_legacy_optical feros_gavo elodie)
+GROUP_B=(galah gemini lamost mast sdss_v_optical desi harpsn_tng ing gtc)
+GROUP_C=(eso gemini_ghost lamost_mrs mast_jwst sdss_legacy_optical feros_gavo elodie hermes_mercator)
 GROUP_D=(cfht_cadc gemini_igrins lbt noirlab carmenes flashheros_gavo sophie)
 
 mkdir -p logs
