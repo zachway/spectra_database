@@ -69,6 +69,7 @@ DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
     "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
     "sky_sample", "triage_queue",
+    "archive_overlap", "archive_overlap_triple", "instrument_overlap", "instrument_overlap_triple",
 )
 
 
@@ -1075,6 +1076,14 @@ INSTRUMENTS_TEMPLATE = """
   <title>Spectra Database — Instruments</title>
   <style>""" + SHARED_STYLE + """
     #instrument-treemap, #instrument-sky { width: 100%; height: 700px; margin-top: 1rem; }
+    #overlap-heatmap { width: 100%; height: 650px; margin-top: 1rem; }
+    .overlap-controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
+    .overlap-controls select { font-family: monospace; padding: 0.3rem; }
+    .granularity-btn { font-family: monospace; padding: 0.3rem 0.8rem; border: 1px solid #000; background: #fff; cursor: pointer; }
+    .granularity-btn.active { background: #000; color: #fff; }
+    #venn-svg-wrap svg { max-width: 100%; height: auto; }
+    #venn-legend { margin-top: 0.8rem; }
+    #venn-legend table { width: auto; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
@@ -1118,9 +1127,302 @@ INSTRUMENTS_TEMPLATE = """
   {% else %}
     <p>No position-tagged instrument data yet.</p>
   {% endif %}
+
+  <hr>
+  <h2>Star overlap between archives</h2>
+  {% if archive_items|length >= 2 %}
+  <p class="note">How many stars have spectra from more than one source. "Archives" is the coarse view (which observatories/surveys share targets); "Instruments" breaks archives that host several instruments (e.g. Gemini, KOA) apart -- e.g. HARPS vs. HARPS-N vs. ELODIE. The heatmap shows every pair at once (color = # shared stars; the diagonal, unshaded, is each set's own total). Below it, pick 2 or 3 sets for an exact, proportionally-sized Venn diagram.</p>
+  <div class="overlap-controls">
+    <button type="button" class="granularity-btn active" id="granularity-archives" onclick="setOverlapGranularity('archives')">Archives</button>
+    <button type="button" class="granularity-btn" id="granularity-instruments" onclick="setOverlapGranularity('instruments')">Instruments</button>
+  </div>
+  <div id="overlap-heatmap"></div>
+
+  <h3>Venn diagram</h3>
+  <div class="overlap-controls">
+    <select id="venn-select-a"></select>
+    <select id="venn-select-b"></select>
+    <label><input type="checkbox" id="venn-add-third" onchange="onVennThirdToggle()"> add a third set</label>
+    <select id="venn-select-c" disabled></select>
+  </div>
+  <div id="venn-svg-wrap"></div>
+  <div id="venn-legend"></div>
+
+  <script>
+    const overlapData = {
+      archives: { items: {{ archive_items | tojson }}, pairs: {{ archive_pairs | tojson }}, triples: {{ archive_triples | tojson }} },
+      instruments: { items: {{ instrument_items | tojson }}, pairs: {{ instrument_pairs | tojson }}, triples: {{ instrument_triples | tojson }} },
+    };
+    const INSTRUMENT_HEATMAP_TOP_N = {{ instrument_heatmap_top_n }};
+    let overlapGranularity = 'archives';
+    const VENN_COLORS = ['#2a78d6', '#eb6834', '#1baf7a'];
+
+    function pairKey(a, b) { return [a, b].sort().join('\\u0000'); }
+    function tripleKey(a, b, c) { return [a, b, c].sort().join('\\u0000'); }
+    function pairMap(pairs) {
+      const m = new Map();
+      pairs.forEach(p => m.set(pairKey(p.a, p.b), p.n));
+      return m;
+    }
+    function tripleMap(triples) {
+      const m = new Map();
+      triples.forEach(t => m.set(tripleKey(t.a, t.b, t.c), t.n));
+      return m;
+    }
+    function itemByCode(code) {
+      return overlapData[overlapGranularity].items.find(it => it.code === code);
+    }
+    function pairOverlap(sets, i, j) {
+      return pairMap(overlapData[overlapGranularity].pairs).get(pairKey(sets[i].code, sets[j].code)) || 0;
+    }
+
+    function renderHeatmap() {
+      const data = overlapData[overlapGranularity];
+      const topN = overlapGranularity === 'archives' ? data.items.length : INSTRUMENT_HEATMAP_TOP_N;
+      const items = data.items.slice(0, topN);
+      const pmap = pairMap(data.pairs);
+      const labels = items.map(it => it.display_name);
+      const z = [];
+      const annotations = [];
+      for (let i = 0; i < items.length; i++) {
+        const row = [];
+        for (let j = 0; j < items.length; j++) {
+          if (i === j) {
+            row.push(null);
+            annotations.push({ x: labels[j], y: labels[i], text: items[i].n.toLocaleString(), showarrow: false, font: { size: 10, color: '#52514e' } });
+          } else {
+            row.push(pmap.get(pairKey(items[i].code, items[j].code)) || 0);
+          }
+        }
+        z.push(row);
+      }
+      Plotly.newPlot('overlap-heatmap', [{
+        type: 'heatmap', x: labels, y: labels, z: z,
+        colorscale: [[0, '#cde2fb'], [0.25, '#6da7ec'], [0.5, '#2a78d6'], [0.75, '#1c5cab'], [1, '#0d366b']],
+        hoverongaps: false,
+        hovertemplate: '%{y} \\u2229 %{x}: %{z:,} stars<extra></extra>',
+        colorbar: { title: { text: 'shared stars' } },
+      }], {
+        margin: { t: 10, l: 150, r: 20, b: 150 },
+        xaxis: { tickangle: -45, automargin: true },
+        yaxis: { automargin: true },
+        annotations: annotations,
+      }, { responsive: true });
+    }
+
+    function populateSelects() {
+      const items = overlapData[overlapGranularity].items;
+      const selects = ['venn-select-a', 'venn-select-b', 'venn-select-c'].map(id => document.getElementById(id));
+      selects.forEach((sel, idx) => {
+        sel.innerHTML = '';
+        items.forEach(it => {
+          const opt = document.createElement('option');
+          opt.value = it.code;
+          opt.textContent = it.display_name + ' (' + it.n.toLocaleString() + ')';
+          sel.appendChild(opt);
+        });
+        sel.selectedIndex = Math.min(idx, items.length - 1);
+      });
+    }
+
+    // Solves for the center-to-center distance between two circles that
+    // makes their overlap (lens) area equal targetArea -- lens area shrinks
+    // monotonically as distance grows (from full containment down to 0 at
+    // r1+r2 apart), so a plain bisection over that range converges cleanly.
+    // Same approach matplotlib_venn uses for its 2/3-circle proportional
+    // Venn diagrams: fit each pairwise distance independently from that
+    // pair's own overlap area, then triangulate the third circle's position
+    // from the three (independently-fit) distances -- the resulting middle
+    // region is usually close to, but not exactly, the true triple-overlap
+    // count, so the actual count is always shown as text rather than relied
+        // on to fall out of the geometry.
+    function lensArea(r1, r2, d) {
+      if (d >= r1 + r2) return 0;
+      if (d <= Math.abs(r1 - r2)) return Math.PI * Math.min(r1, r2) ** 2;
+      const clamp = (v) => Math.max(-1, Math.min(1, v));
+      const alpha = Math.acos(clamp((d * d + r1 * r1 - r2 * r2) / (2 * d * r1)));
+      const beta = Math.acos(clamp((d * d + r2 * r2 - r1 * r1) / (2 * d * r2)));
+      const tri = 0.5 * Math.sqrt(Math.max(0, (-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2)));
+      return r1 * r1 * alpha + r2 * r2 * beta - tri;
+    }
+    function solveDistance(r1, r2, targetArea) {
+      const maxArea = Math.PI * Math.min(r1, r2) ** 2;
+      if (targetArea <= 0) return r1 + r2;
+      if (targetArea >= maxArea) return Math.abs(r1 - r2);
+      let lo = Math.abs(r1 - r2), hi = r1 + r2;
+      for (let i = 0; i < 60; i++) {
+        const mid = (lo + hi) / 2;
+        if (lensArea(r1, r2, mid) > targetArea) lo = mid; else hi = mid;
+      }
+      return (lo + hi) / 2;
+    }
+
+    function computeVennLayout(sets) {
+      const pmap = pairMap(overlapData[overlapGranularity].pairs);
+      const tmap = tripleMap(overlapData[overlapGranularity].triples);
+      const maxTotal = Math.max(...sets.map(s => s.n));
+      const R_MAX = 150;
+      const scale = R_MAX / Math.sqrt(maxTotal);
+      const radii = sets.map(s => scale * Math.sqrt(s.n));
+      const areaPerCount = Math.PI * scale * scale;
+      const overlapN = (i, j) => i === j ? sets[i].n : (pmap.get(pairKey(sets[i].code, sets[j].code)) || 0);
+
+      if (sets.length === 2) {
+        const d = solveDistance(radii[0], radii[1], overlapN(0, 1) * areaPerCount);
+        return { centers: [{ x: 0, y: 0 }, { x: d, y: 0 }], radii, tripleN: null };
+      }
+
+      const dAB = solveDistance(radii[0], radii[1], overlapN(0, 1) * areaPerCount);
+      const dAC = solveDistance(radii[0], radii[2], overlapN(0, 2) * areaPerCount);
+      const dBC = solveDistance(radii[1], radii[2], overlapN(1, 2) * areaPerCount);
+      const cx = (dAC * dAC - dBC * dBC + dAB * dAB) / (2 * dAB);
+      const cy = Math.sqrt(Math.max(0, dAC * dAC - cx * cx));
+      const tripleN = tmap.get(tripleKey(sets[0].code, sets[1].code, sets[2].code)) || 0;
+      return { centers: [{ x: 0, y: 0 }, { x: dAB, y: 0 }, { x: cx, y: cy }], radii, tripleN };
+    }
+
+    function labelAt(x, y, text) {
+      return '<text x="' + x + '" y="' + y + '" text-anchor="middle" dominant-baseline="middle" ' +
+        'font-family="monospace" font-size="13" fill="#0b0b0b">' + text + '</text>';
+    }
+
+    function renderVenn() {
+      const selA = document.getElementById('venn-select-a').value;
+      const selB = document.getElementById('venn-select-b').value;
+      const thirdEnabled = document.getElementById('venn-add-third').checked;
+      const selC = thirdEnabled ? document.getElementById('venn-select-c').value : null;
+      const codes = [selA, selB].concat(selC ? [selC] : []);
+
+      if (new Set(codes).size !== codes.length || codes.some(c => !c)) {
+        document.getElementById('venn-svg-wrap').innerHTML = '<p class="note">Pick distinct sets.</p>';
+        document.getElementById('venn-legend').innerHTML = '';
+        return;
+      }
+      const sets = codes.map(itemByCode);
+      if (sets.some(s => !s)) return;
+
+      const layout = computeVennLayout(sets);
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      layout.centers.forEach((c, i) => {
+        minX = Math.min(minX, c.x - layout.radii[i]);
+        maxX = Math.max(maxX, c.x + layout.radii[i]);
+        minY = Math.min(minY, c.y - layout.radii[i]);
+        maxY = Math.max(maxY, c.y + layout.radii[i]);
+      });
+      const pad = 40;
+      minX -= pad; maxX += pad; minY -= pad; maxY += pad;
+
+      let svg = '<svg viewBox="' + minX + ' ' + minY + ' ' + (maxX - minX) + ' ' + (maxY - minY) +
+        '" xmlns="http://www.w3.org/2000/svg">';
+      layout.centers.forEach((c, i) => {
+        svg += '<circle cx="' + c.x + '" cy="' + c.y + '" r="' + layout.radii[i] + '" fill="' + VENN_COLORS[i] +
+          '" fill-opacity="0.5" stroke="' + VENN_COLORS[i] + '" stroke-width="2" />';
+      });
+
+      const centroid = {
+        x: layout.centers.reduce((s, c) => s + c.x, 0) / layout.centers.length,
+        y: layout.centers.reduce((s, c) => s + c.y, 0) / layout.centers.length,
+      };
+
+      if (sets.length === 2) {
+        const n01 = pairOverlap(sets, 0, 1);
+        const onlyA = sets[0].n - n01, onlyB = sets[1].n - n01;
+        const c0 = layout.centers[0], c1 = layout.centers[1];
+        [[c0, c1, onlyA], [c1, c0, onlyB]].forEach(([from, other, val]) => {
+          const dx = from.x - other.x, dy = from.y - other.y;
+          const norm = Math.hypot(dx, dy) || 1;
+          svg += labelAt(from.x + dx / norm * 0.5 * layout.radii[layout.centers.indexOf(from)],
+                          from.y + dy / norm * 0.5 * layout.radii[layout.centers.indexOf(from)], val.toLocaleString());
+        });
+        svg += labelAt((c0.x + c1.x) / 2, (c0.y + c1.y) / 2, n01.toLocaleString());
+      } else {
+        const n01 = pairOverlap(sets, 0, 1), n02 = pairOverlap(sets, 0, 2), n12 = pairOverlap(sets, 1, 2);
+        const n012 = layout.tripleN;
+        const only = [
+          sets[0].n - n01 - n02 + n012,
+          sets[1].n - n01 - n12 + n012,
+          sets[2].n - n02 - n12 + n012,
+        ];
+        layout.centers.forEach((c, i) => {
+          const dx = c.x - centroid.x, dy = c.y - centroid.y;
+          const norm = Math.hypot(dx, dy) || 1;
+          svg += labelAt(c.x + dx / norm * 0.55 * layout.radii[i], c.y + dy / norm * 0.55 * layout.radii[i], only[i].toLocaleString());
+        });
+        const pairLabels = [
+          { mid: midpoint(layout.centers[0], layout.centers[1]), away: layout.centers[2], val: n01 - n012 },
+          { mid: midpoint(layout.centers[0], layout.centers[2]), away: layout.centers[1], val: n02 - n012 },
+          { mid: midpoint(layout.centers[1], layout.centers[2]), away: layout.centers[0], val: n12 - n012 },
+        ];
+        pairLabels.forEach(p => {
+          const dx = p.mid.x - p.away.x, dy = p.mid.y - p.away.y;
+          const norm = Math.hypot(dx, dy) || 1;
+          svg += labelAt(p.mid.x + dx / norm * 18, p.mid.y + dy / norm * 18, p.val.toLocaleString());
+        });
+        svg += labelAt(centroid.x, centroid.y, n012.toLocaleString());
+      }
+      svg += '</svg>';
+      document.getElementById('venn-svg-wrap').innerHTML = svg;
+
+      let legend = '<table><tr><th></th><th>Set</th><th>Total stars</th></tr>';
+      sets.forEach((s, i) => {
+        legend += '<tr><td><span style="display:inline-block;width:12px;height:12px;background:' + VENN_COLORS[i] +
+          ';border-radius:2px;"></span></td><td>' + s.display_name + '</td><td>' + s.n.toLocaleString() + '</td></tr>';
+      });
+      legend += '</table>';
+      document.getElementById('venn-legend').innerHTML = legend;
+    }
+
+    function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+
+    function setOverlapGranularity(g) {
+      overlapGranularity = g;
+      document.getElementById('granularity-archives').classList.toggle('active', g === 'archives');
+      document.getElementById('granularity-instruments').classList.toggle('active', g === 'instruments');
+      document.getElementById('venn-add-third').checked = false;
+      document.getElementById('venn-select-c').disabled = true;
+      populateSelects();
+      renderHeatmap();
+      renderVenn();
+    }
+    function onVennThirdToggle() {
+      document.getElementById('venn-select-c').disabled = !document.getElementById('venn-add-third').checked;
+      renderVenn();
+    }
+
+    populateSelects();
+    renderHeatmap();
+    ['venn-select-a', 'venn-select-b', 'venn-select-c'].forEach(id =>
+      document.getElementById(id).addEventListener('change', renderVenn)
+    );
+    renderVenn();
+  </script>
+  {% else %}
+    <p>Not enough archives with matched holdings yet to compute overlap.</p>
+  {% endif %}
 </body>
 </html>
 """
+
+
+INSTRUMENT_OVERLAP_HEATMAP_TOP_N = 20
+
+
+def _split_overlap_rows(rows: list[dict], a_key: str, b_key: str, display_key: str | None = None):
+    """archive_overlap/instrument_overlap rows are a<=b pairs including the
+    a==b self-pair (see export_to_parquet's comment on why) -- split that
+    into per-item totals (from the self-pairs) and strict a<b pairs (the
+    actual overlaps), the two things the heatmap and Venn picker need
+    separately."""
+    totals: dict[str, dict] = {}
+    pairs: list[dict] = []
+    for r in rows:
+        a, b, n = r[a_key], r[b_key], r["n_overlap"]
+        if a == b:
+            totals[a] = {"code": a, "display_name": r[display_key] if display_key else a, "n": n}
+        else:
+            pairs.append({"a": a, "b": b, "n": n})
+    items = sorted(totals.values(), key=lambda x: -x["n"])
+    return items, pairs
 
 
 @app.route("/instruments")
@@ -1161,11 +1463,51 @@ def instruments_page():
         x, y = _aitoff_project([p["raw_ra"] for p in pts], [p["raw_dec"] for p in pts])
         sky_traces.append({"instrument": instrument, "x": x, "y": y})
 
+    # Star overlap between archives/instruments -- archive_overlap(_triple)
+    # and instrument_overlap(_triple) are precomputed by
+    # scripts.export_to_parquet (see the queries there for why: this needs
+    # a per-star array_agg + self-cross rather than a live self-join over
+    # the full, ever-growing holdings table). Backs the overlap heatmap and
+    # the 2/3-set Venn picker below.
+    cur.execute("SELECT archive_a, display_a, archive_b, display_b, n_overlap FROM archive_overlap")
+    archive_items, archive_pairs = _split_overlap_rows(
+        _rows_as_dicts(cur), "archive_a", "archive_b", "display_a"
+    )
+
+    # Self-triples (a==b==c) duplicate archive_overlap's diagonal -- not
+    # needed here, only the genuine 3-distinct-set combinations the Venn
+    # picker looks up.
+    cur.execute(
+        "SELECT archive_a, archive_b, archive_c, n_overlap FROM archive_overlap_triple "
+        "WHERE archive_a != archive_b AND archive_b != archive_c"
+    )
+    archive_triples = [
+        {"a": r["archive_a"], "b": r["archive_b"], "c": r["archive_c"], "n": r["n_overlap"]}
+        for r in _rows_as_dicts(cur)
+    ]
+
+    cur.execute("SELECT instrument_a, instrument_b, n_overlap FROM instrument_overlap")
+    instrument_items, instrument_pairs = _split_overlap_rows(
+        _rows_as_dicts(cur), "instrument_a", "instrument_b"
+    )
+
+    cur.execute(
+        "SELECT instrument_a, instrument_b, instrument_c, n_overlap FROM instrument_overlap_triple "
+        "WHERE instrument_a != instrument_b AND instrument_b != instrument_c"
+    )
+    instrument_triples = [
+        {"a": r["instrument_a"], "b": r["instrument_b"], "c": r["instrument_c"], "n": r["n_overlap"]}
+        for r in _rows_as_dicts(cur)
+    ]
+
     return render_template_string(
         INSTRUMENTS_TEMPLATE,
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
         sky_traces=sky_traces,
         top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
+        archive_items=archive_items, archive_pairs=archive_pairs, archive_triples=archive_triples,
+        instrument_items=instrument_items, instrument_pairs=instrument_pairs, instrument_triples=instrument_triples,
+        instrument_heatmap_top_n=INSTRUMENT_OVERLAP_HEATMAP_TOP_N,
         active_tab="instruments",
     )
 
