@@ -1257,24 +1257,37 @@ INSTRUMENTS_TEMPLATE = """
       return (lo + hi) / 2;
     }
 
+    // Real archive/instrument totals span several orders of magnitude
+    // (LAMOST: millions: ELODIE: tens of thousands) -- sizing circles so
+    // area is exactly proportional to count (radius ~ sqrt(n)) makes the
+    // smallest set collapse to a sub-pixel sliver next to the largest one,
+    // confirmed live once this ran against real production data instead of
+    // the small synthetic test set used during development. log10(n+1)
+    // compresses that range so every set stays visible; it's a legibility
+    // choice, not a correctness one -- the geometry no longer represents
+    // true proportions, which is why renderVenn always labels every region
+    // with its real count (never relies on the drawn area to convey it).
+    function sizeMetric(n) { return Math.log10(n + 1); }
+
     function computeVennLayout(sets) {
       const pmap = pairMap(overlapData[overlapGranularity].pairs);
       const tmap = tripleMap(overlapData[overlapGranularity].triples);
-      const maxTotal = Math.max(...sets.map(s => s.n));
+      const maxMetric = Math.max(...sets.map(s => sizeMetric(s.n)));
       const R_MAX = 150;
-      const scale = R_MAX / Math.sqrt(maxTotal);
-      const radii = sets.map(s => scale * Math.sqrt(s.n));
-      const areaPerCount = Math.PI * scale * scale;
+      const scale = R_MAX / Math.sqrt(maxMetric);
+      const radii = sets.map(s => scale * Math.sqrt(sizeMetric(s.n)));
+      const areaPerMetric = Math.PI * scale * scale;
       const overlapN = (i, j) => i === j ? sets[i].n : (pmap.get(pairKey(sets[i].code, sets[j].code)) || 0);
+      const overlapArea = (i, j) => sizeMetric(overlapN(i, j)) * areaPerMetric;
 
       if (sets.length === 2) {
-        const d = solveDistance(radii[0], radii[1], overlapN(0, 1) * areaPerCount);
+        const d = solveDistance(radii[0], radii[1], overlapArea(0, 1));
         return { centers: [{ x: 0, y: 0 }, { x: d, y: 0 }], radii, tripleN: null };
       }
 
-      const dAB = solveDistance(radii[0], radii[1], overlapN(0, 1) * areaPerCount);
-      const dAC = solveDistance(radii[0], radii[2], overlapN(0, 2) * areaPerCount);
-      const dBC = solveDistance(radii[1], radii[2], overlapN(1, 2) * areaPerCount);
+      const dAB = solveDistance(radii[0], radii[1], overlapArea(0, 1));
+      const dAC = solveDistance(radii[0], radii[2], overlapArea(0, 2));
+      const dBC = solveDistance(radii[1], radii[2], overlapArea(1, 2));
       const cx = (dAC * dAC - dBC * dBC + dAB * dAB) / (2 * dAB);
       const cy = Math.sqrt(Math.max(0, dAC * dAC - cx * cx));
       const tripleN = tmap.get(tripleKey(sets[0].code, sets[1].code, sets[2].code)) || 0;
