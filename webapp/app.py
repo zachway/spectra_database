@@ -34,13 +34,18 @@ import base64
 import csv
 import io
 import json
+import math
 import os
+import random
 import re
+import secrets
+import threading
+import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 
 import astropy.units as u
 import duckdb
@@ -1707,22 +1712,76 @@ def _joy_ssh_client() -> paramiko.SSHClient:
     return client
 
 
+# A fresh call to _joy_ssh_client() pays a full TCP + SSH key-exchange +
+# auth round trip to joy over the public internet -- confirmed live this was
+# the dominant chunk of /triage/submit's latency, often 1-3s on its own.
+# Cached and reused across requests within this process instead: paramiko
+# lets multiple exec_command() calls open independent channels over one
+# already-authenticated transport (the server's authorized_keys `command=`
+# forced-command applies per channel, not per TCP connection, so each call
+# still independently re-runs joy_triage_append.py), which turns every
+# submission after the first into just a channel open, no handshake. Guarded
+# by a lock since app.run(threaded=True) serves requests concurrently and a
+# paramiko SSHClient/Transport isn't safe to drive from multiple threads at
+# once.
+_joy_ssh_lock = threading.Lock()
+_joy_ssh_client_cache: paramiko.SSHClient | None = None
+
+
 def _append_triage_submission(payload: dict) -> None:
-    client = _joy_ssh_client()
-    try:
-        # The remote end's authorized_keys `command=` forced-command ignores
-        # whatever we ask to exec here and always runs the append script --
-        # see scripts/joy_triage_append.py. The literal string doesn't
-        # matter, but exec_command requires one.
-        stdin, stdout, stderr = client.exec_command("append-triage-submission", timeout=10)
-        stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
-        stdin.channel.shutdown_write()
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status != 0:
-            err = stderr.read().decode("utf-8", "replace").strip()
-            raise RuntimeError(f"joy rejected this submission (exit {exit_status}): {err}")
-    finally:
-        client.close()
+    global _joy_ssh_client_cache
+    data = json.dumps(payload, separators=(",", ":")) + "\n"
+
+    for attempt in (1, 2):
+        with _joy_ssh_lock:
+            client = _joy_ssh_client_cache
+            transport = client.get_transport() if client is not None else None
+            if transport is None or not transport.is_active():
+                if client is not None:
+                    client.close()
+                client = _joy_ssh_client()
+                _joy_ssh_client_cache = client
+
+        try:
+            # The remote end's authorized_keys `command=` forced-command
+            # ignores whatever we ask to exec here and always runs the
+            # append script -- see scripts/joy_triage_append.py. The literal
+            # string doesn't matter, but exec_command requires one.
+            stdin, stdout, stderr = client.exec_command("append-triage-submission", timeout=10)
+            stdin.write(data)
+            stdin.channel.shutdown_write()
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0:
+                err = stderr.read().decode("utf-8", "replace").strip()
+                raise RuntimeError(f"joy rejected this submission (exit {exit_status}): {err}")
+            return
+        except RuntimeError:
+            raise  # a real rejection from the script, not a connection problem -- don't retry
+        except Exception:
+            # Connection-shaped failure (dropped transport, reset, etc.) --
+            # drop the cached client and, on the first attempt, retry once
+            # against a freshly-opened connection before giving up.
+            with _joy_ssh_lock:
+                if _joy_ssh_client_cache is client:
+                    _joy_ssh_client_cache = None
+            try:
+                client.close()
+            except Exception:
+                pass
+            if attempt == 2:
+                raise
+
+
+# Every /triage page load (and the single-record view now means one load
+# per skip/submit, not one per 20-row batch) re-fetches and re-parses this
+# whole file -- fine when it's small, but it only ever grows, and every
+# submit immediately triggers a fresh page load that fetches it again. A
+# short TTL cache keeps rapid skip/submit clicks from each paying a full
+# fetch+parse; a few seconds of staleness here just means "prior submission"
+# annotations can lag slightly behind your own just-submitted vote, which is
+# harmless -- the submission itself already landed on joy regardless.
+_TRIAGE_SUBMISSIONS_CACHE_TTL_SECONDS = 10.0
+_triage_submissions_cache: dict = {"result": None, "fetched_at": 0.0}
 
 
 def _fetch_triage_submissions() -> tuple[list[dict], str | None]:
@@ -1741,7 +1800,22 @@ def _fetch_triage_submissions() -> tuple[list[dict], str | None]:
     ones not yet applied (this process has no way to know
     skip_classifications.applied_at) -- good enough for "does this
     identifier already have votes", which is all /triage uses it for.
+
+    Cached for _TRIAGE_SUBMISSIONS_CACHE_TTL_SECONDS -- see the comment above
+    the cache dict.
     """
+    now = time.monotonic()
+    cached = _triage_submissions_cache["result"]
+    if cached is not None and now - _triage_submissions_cache["fetched_at"] < _TRIAGE_SUBMISSIONS_CACHE_TTL_SECONDS:
+        return cached
+
+    result = _fetch_triage_submissions_uncached()
+    _triage_submissions_cache["result"] = result
+    _triage_submissions_cache["fetched_at"] = now
+    return result
+
+
+def _fetch_triage_submissions_uncached() -> tuple[list[dict], str | None]:
     source = _resolve_data_source()
     if source.startswith("http://") or source.startswith("https://"):
         try:
@@ -1825,6 +1899,8 @@ TRIAGE_TEMPLATE = """
     .record-list { font-size: 0.9rem; }
     .record-list a { margin-right: 0.8rem; }
     .mood-image { float: right; max-width: 140px; margin: 0 0 0.5rem 1rem; }
+    .triage-progress { display: flex; justify-content: space-between; align-items: baseline; }
+    .skip-link { white-space: nowrap; margin-left: 1rem; }
   </style>
 </head>
 <body>
@@ -1834,16 +1910,19 @@ TRIAGE_TEMPLATE = """
   <p class="note">
     These are spectroscopy_holdings rows with match_status = 'skipped' -- the
     automated matcher (see <a href="/info">More Info</a>) found no name or
-    positional candidate at all for them. Rows below are grouped by
-    (archive, reported target name) rather than shown one-per-record, so the
-    same identifier doesn't resurface over and over -- a classification is
+    positional candidate at all for them. Rows are grouped by (archive,
+    reported target name) rather than shown one-per-record, so the same
+    identifier doesn't resurface over and over -- a classification is
     submitted once and recorded against every underlying record sharing that
-    name. Submissions below do <b>not</b> update the database directly: they
-    accumulate as independent votes (recorded to a public file, imported
-    into the real skip_classifications table the next time this project's
-    export job runs) and only get applied once a quorum of contributors
-    agree (design sketch -- the apply step is a documented stub, not wired
-    up yet).
+    name. Shown one at a time, shuffled per-visitor (named/high-record-count
+    groups still weighted to surface earlier) rather than a fixed queue, so
+    different contributors aren't all working through the identical
+    sequence. Submissions below do <b>not</b> update the database directly:
+    they accumulate as independent votes (recorded to a public file,
+    imported into the real skip_classifications table the next time this
+    project's export job runs) and only get applied once a quorum of
+    contributors agree (design sketch -- the apply step is a documented
+    stub, not wired up yet).
   </p>
 
   {% if error %}
@@ -1854,6 +1933,13 @@ TRIAGE_TEMPLATE = """
   {% endif %}
   {% if submissions_error %}
     <p class="note">Prior-submission history unavailable ({{ submissions_error }}) -- showing the skipped queue without it.</p>
+  {% endif %}
+
+  {% if total %}
+    <p class="triage-progress">
+      <span>Record {{ offset + 1 }} of {{ total }} in your shuffled queue.</span>
+      <a class="skip-link" href="/triage?{{ skip_query }}">Skip this one, show me another &rarr;</a>
+    </p>
   {% endif %}
 
   {% for r in rows %}
@@ -1891,6 +1977,7 @@ TRIAGE_TEMPLATE = """
     {% endif %}
 
     <form method="post" action="/triage/submit">
+      <input type="hidden" name="offset" value="{{ offset }}">
       <input type="hidden" name="archive_code" value="{{ r.archive_code }}">
       {% if r.raw_target_name %}
         <input type="hidden" name="raw_target_name" value="{{ r.raw_target_name }}">
@@ -1929,7 +2016,7 @@ TRIAGE_TEMPLATE = """
         <input type="hidden" name="gaia_cone_search_radius_arcsec" value="{{ triage_cone_search_radius }}">
       {% endif %}
 
-      <label>Submitter name/handle: <input type="text" name="submitter" required size="24"></label>
+      <label>Submitter name/handle: <input type="text" name="submitter" value="{{ submitter_prefill }}" required size="24"></label>
       <label>Note (optional): <input type="text" name="note" size="40"></label>
       <button type="submit">Submit classification for all {{ r.n_records }} record{{ "s" if r.n_records != 1 else "" }}</button>
     </form>
@@ -1939,6 +2026,50 @@ TRIAGE_TEMPLATE = """
 </body>
 </html>
 """
+
+
+TRIAGE_SUBMITTER_COOKIE = "triage_submitter"
+TRIAGE_SEED_COOKIE = "triage_seed"
+TRIAGE_COOKIE_MAX_AGE_SECONDS = 180 * 24 * 3600  # ~6 months
+
+
+def _triage_redirect(offset: int, **params) -> Response:
+    """Builds an /triage redirect carrying the current offset (so an error,
+    or a submitted/skipped record, lands back on the right spot in the
+    contributor's shuffled queue instead of jumping to the start) plus
+    whatever else the caller wants to set (error=, note=, ...).
+    """
+    params["offset"] = offset
+    return redirect("/triage?" + urlencode({k: v for k, v in params.items() if v is not None}))
+
+
+# Every visitor used to see the literal same fixed slice of triage_queue in
+# the same order every time (a plain SQL ORDER BY over a small, infrequently
+# -changing precomputed table -- see TRIAGE_QUEUE_QUERY's own LIMIT 200 in
+# scripts/export_to_parquet.py) -- confirmed this meant everyone triaging on
+# a given day just worked through the identical sequence of records.
+# Reordered here instead, once per request, keyed off a random per-visitor
+# seed cookie (TRIAGE_SEED_COOKIE) so different visitors fan out across the
+# pool -- named groups still always sort before nameless ones (matches
+# triage_queue's own priority, no reason to ever invert that), but within
+# each of those two tiers the order is a weighted random shuffle
+# (Efraimidis-Spirakis weighted sampling: key = -ln(u)/weight, sorted
+# ascending) so a group with many underlying records is *more likely* to
+# surface early without being pinned to the exact same n_records-DESC order
+# every single time. The whole pool is at most TRIAGE_QUEUE_TOP_N (200) rows
+# -- cheap to pull in full and reorder in Python rather than pushing this
+# into SQL.
+def _shuffle_triage_pool(pool: list[dict], seed: str) -> list[dict]:
+    rng = random.Random(seed)
+
+    def weighted_shuffle(items: list[dict]) -> list[dict]:
+        keyed = [(-math.log(rng.random()) / max(item["n_records"], 1), item) for item in items]
+        keyed.sort(key=lambda pair: pair[0])
+        return [item for _, item in keyed]
+
+    named = [r for r in pool if r["raw_target_name"]]
+    unnamed = [r for r in pool if not r["raw_target_name"]]
+    return weighted_shuffle(named) + weighted_shuffle(unnamed)
 
 
 @app.route("/triage")
@@ -1954,25 +2085,37 @@ def triage():
     # page load -- this project tries to keep Cloud Run request time (and
     # therefore cost) down wherever the data doesn't need to be live-fresh,
     # and a "run the export by hand every so often" cadence is already how
-    # every other derived page here works.
+    # every other derived page here works. No ORDER BY/LIMIT here -- the
+    # whole (already-capped-upstream) pool is fetched and reshuffled in
+    # Python by _shuffle_triage_pool, per-visitor.
     cur.execute(
         """
         SELECT archive_code, display_name, group_key, raw_target_name, n_records,
                archive_obs_ids, archive_urls, raw_ra, raw_dec, obs_date, instrument, updated_at
         FROM triage_queue
-        ORDER BY (raw_target_name IS NOT NULL) DESC, n_records DESC
-        LIMIT 20
         """
     )
-    rows = _rows_as_dicts(cur)
+    pool = _rows_as_dicts(cur)
+
+    seed = request.cookies.get(TRIAGE_SEED_COOKIE) or secrets.token_hex(8)
+    ordered = _shuffle_triage_pool(pool, seed)
+    total = len(ordered)
+
+    try:
+        offset = int(request.args.get("offset", "0"))
+    except ValueError:
+        offset = 0
+    if total:
+        offset %= total  # wraps back to the top of the queue past the end, e.g. after repeated skips
+
+    rows = ordered[offset:offset + 1]
     for r in rows:
         r["records"] = list(zip(r["archive_obs_ids"] or [], r["archive_urls"] or []))
         r["records_truncated"] = r["n_records"] > len(r["records"])
 
     # Cone-search preview, if the contributor just clicked "run live cone
-    # search" for one identifier group below (see /triage/cone_search) --
-    # carried over via a redirect query string (no JS/session state in this
-    # sketch).
+    # search" for the identifier below (see /triage/cone_search) -- carried
+    # over via a redirect query string (no JS/session state in this sketch).
     preview_key = (request.args.get("preview_archive_code", ""), request.args.get("preview_group_key", ""))
     preview_result = request.args.get("preview_result", "")
 
@@ -2001,17 +2144,23 @@ def triage():
                 "group_key": r["group_key"],
                 "ra": r["raw_ra"],
                 "dec": r["raw_dec"],
+                "offset": offset,
             })
             r["cone_search_result"] = preview_result if key == preview_key else None
         else:
             r["aladin_url"] = None
             r["cone_search_result"] = None
 
-    return render_template_string(
+    resp = Response(render_template_string(
         TRIAGE_TEMPLATE, active_tab="triage", rows=rows,
         error=request.args.get("error"), note=request.args.get("note"),
         submissions_error=submissions_error, triage_cone_search_radius=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC,
-    )
+        offset=offset, total=total, skip_query=urlencode({"offset": offset + 1}),
+        submitter_prefill=request.cookies.get(TRIAGE_SUBMITTER_COOKIE, ""),
+    ))
+    if request.cookies.get(TRIAGE_SEED_COOKIE) != seed:
+        resp.set_cookie(TRIAGE_SEED_COOKIE, seed, max_age=TRIAGE_COOKIE_MAX_AGE_SECONDS, samesite="Lax")
+    return resp
 
 
 @app.route("/triage/cone_search")
@@ -2026,10 +2175,14 @@ def triage_cone_search():
     archive_code = request.args.get("archive_code", "")
     group_key = request.args.get("group_key", "")
     try:
+        offset = int(request.args.get("offset", "0"))
+    except ValueError:
+        offset = 0
+    try:
         ra = float(request.args.get("ra", ""))
         dec = float(request.args.get("dec", ""))
     except ValueError:
-        return redirect("/triage?error=" + quote("Missing/invalid position for cone search."))
+        return _triage_redirect(offset, error="Missing/invalid position for cone search.")
 
     try:
         job = _launch_gaia_job(
@@ -2037,7 +2190,7 @@ def triage_cone_search():
         )
         table = job.get_results()
     except Exception as exc:
-        return redirect("/triage?error=" + quote(f"Gaia cone search failed: {exc}"))
+        return _triage_redirect(offset, error=f"Gaia cone search failed: {exc}")
 
     if len(table) == 0:
         summary = f"0 Gaia DR3 sources found within {TRIAGE_CONE_SEARCH_RADIUS_ARCSEC:g}\" of ({ra:.5f}, {dec:.5f})."
@@ -2051,11 +2204,17 @@ def triage_cone_search():
         "preview_archive_code": archive_code,
         "preview_group_key": group_key,
         "preview_result": summary,
+        "offset": offset,
     }))
 
 
 @app.route("/triage/submit", methods=["POST"])
 def triage_submit():
+    try:
+        offset = int(request.form.get("offset", "0"))
+    except ValueError:
+        offset = 0
+
     archive_code = request.form.get("archive_code", "").strip()
     # Exactly one of these is set, depending on which branch of the form's
     # {% if r.raw_target_name %} the row rendered (see TRIAGE_TEMPLATE):
@@ -2070,7 +2229,7 @@ def triage_submit():
     note = request.form.get("note", "").strip() or None
 
     if not archive_code or not (raw_target_name or archive_obs_id) or not submitter:
-        return redirect("/triage?error=" + quote("archive_code, a target identifier, and submitter are all required."))
+        return _triage_redirect(offset, error="archive_code, a target identifier, and submitter are all required.")
 
     proposed_gaia_source_id = None
     proposed_bsc_hr_number = None
@@ -2080,7 +2239,7 @@ def triage_submit():
     if outcome == "attach_gaia_source":
         target = request.form.get("gaia_target", "").strip()
         if not target:
-            return redirect("/triage?error=" + quote("Enter a Gaia source_id or star name to attach."))
+            return _triage_redirect(offset, error="Enter a Gaia source_id or star name to attach.")
         if target.isdigit():
             proposed_gaia_source_id = int(target)
         else:
@@ -2094,12 +2253,12 @@ def triage_submit():
             try:
                 proposed_gaia_source_id = resolve_gaia_source_id(target)
             except (ValueError, DALServiceError) as exc:
-                return redirect("/triage?error=" + quote(f"Could not resolve {target!r}: {exc}"))
+                return _triage_redirect(offset, error=f"Could not resolve {target!r}: {exc}")
 
     elif outcome == "attach_bright_star":
         target = request.form.get("bright_star_target", "").strip()
         if not target:
-            return redirect("/triage?error=" + quote("Enter a Bright Star (HR) number or star name to attach."))
+            return _triage_redirect(offset, error="Enter a Bright Star (HR) number or star name to attach.")
         if target.isdigit():
             proposed_bsc_hr_number = int(target)
         else:
@@ -2109,19 +2268,20 @@ def triage_submit():
             try:
                 proposed_bsc_hr_number = resolve_bsc_hr_number(target)
             except ValueError as exc:
-                return redirect("/triage?error=" + quote(f"Could not resolve {target!r}: {exc}"))
+                return _triage_redirect(offset, error=f"Could not resolve {target!r}: {exc}")
 
     elif outcome == "confirmed_absent_from_gaia":
         cone_result = request.form.get("gaia_cone_search_result", "").strip()
         radius_raw = request.form.get("gaia_cone_search_radius_arcsec", "").strip()
         if not cone_result or not radius_raw:
-            return redirect("/triage?error=" + quote(
-                "Run the live Gaia cone-search preview for this row before confirming it's absent from Gaia."
-            ))
+            return _triage_redirect(
+                offset,
+                error="Run the live Gaia cone-search preview for this row before confirming it's absent from Gaia.",
+            )
         cone_radius = float(radius_raw)
 
     elif outcome not in ("not_a_real_target", "not_a_star"):
-        return redirect("/triage?error=" + quote("Unrecognized outcome."))
+        return _triage_redirect(offset, error="Unrecognized outcome.")
 
     # archive_obs_id/raw_target_name pass through as-is (either the specific
     # record, for a nameless singleton group, or the shared name, for a named
@@ -2148,18 +2308,25 @@ def triage_submit():
     try:
         _append_triage_submission(payload)
     except RuntimeError as exc:
-        return redirect("/triage?error=" + quote(str(exc)))
+        return _triage_redirect(offset, error=str(exc))
     except Exception as exc:  # paramiko raises various exception types for network/auth failures
-        return redirect("/triage?error=" + quote(f"Could not reach joy to record this submission: {exc}"))
+        return _triage_redirect(offset, error=f"Could not reach joy to record this submission: {exc}")
 
     # Unlike the old live-Postgres path, this can't check ON CONFLICT/dedup
     # or FK validity against spectroscopy_holdings up front -- joy_triage_
     # append.py only validates shape, not against the database. A submitter
     # voting twice on the same identifier, or an identifier that's no longer
     # actually skipped, is only caught at import time now.
-    return redirect("/triage?note=" + quote(
-        "Submission recorded — it'll be applied to skip_classifications the next time the export job runs."
-    ))
+    resp = _triage_redirect(
+        offset + 1,  # move on to the next record in this visitor's shuffled queue
+        note="Submission recorded — it'll be applied to skip_classifications the next time the export job runs.",
+    )
+    # Persists the submitter name/handle across submissions (prefilled via
+    # TRIAGE_SUBMITTER_COOKIE in the triage() route) -- retyping it for every
+    # single record was real friction now that a session means many
+    # single-record submissions in a row, not one page of 20 filled out once.
+    resp.set_cookie(TRIAGE_SUBMITTER_COOKIE, submitter, max_age=TRIAGE_COOKIE_MAX_AGE_SECONDS, samesite="Lax")
+    return resp
 
 
 if __name__ == "__main__":
