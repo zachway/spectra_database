@@ -1182,26 +1182,57 @@ INSTRUMENTS_TEMPLATE = """
       const items = data.items.slice(0, topN);
       const pmap = pairMap(data.pairs);
       const labels = items.map(it => it.display_name);
-      const z = [];
+      const z = [], customdata = [];
       const annotations = [];
+      let maxOverlap = 0;
       for (let i = 0; i < items.length; i++) {
-        const row = [];
+        const zRow = [], cdRow = [];
         for (let j = 0; j < items.length; j++) {
           if (i === j) {
-            row.push(null);
+            zRow.push(null);
+            cdRow.push(null);
             annotations.push({ x: labels[j], y: labels[i], text: items[i].n.toLocaleString(), showarrow: false, font: { size: 10, color: '#52514e' } });
           } else {
-            row.push(pmap.get(pairKey(items[i].code, items[j].code)) || 0);
+            const n = pmap.get(pairKey(items[i].code, items[j].code)) || 0;
+            maxOverlap = Math.max(maxOverlap, n);
+            zRow.push(Math.log10(n + 1));
+            cdRow.push(n);
           }
         }
-        z.push(row);
+        z.push(zRow);
+        customdata.push(cdRow);
       }
+
+      // Real shared-star counts between pairs span orders of magnitude too
+      // (a handful up to hundreds of thousands) -- same reasoning as the
+      // Venn circle sizing above. A linear color scale makes every cell but
+      // the brightest few look the same near-white shade, so cells are
+      // colored by log10(n+1) instead; the colorbar's ticks are remapped
+      // back to real counts (powers of ten, plus the true max so the scale's
+      // top isn't a rounded-off lie) since the underlying log values aren't
+      // meaningful to a reader on their own. hovertemplate reads customdata
+      // (the real count) rather than z (the log-transformed color value).
+      const tickVals = [], tickText = [];
+      for (let t = 1; t <= maxOverlap; t *= 10) {
+        tickVals.push(Math.log10(t + 1));
+        tickText.push(t.toLocaleString());
+      }
+      if (maxOverlap > 0 && tickVals[tickVals.length - 1] < Math.log10(maxOverlap + 1)) {
+        tickVals.push(Math.log10(maxOverlap + 1));
+        tickText.push(maxOverlap.toLocaleString());
+      }
+      const colorbar = { title: { text: 'shared stars' } };
+      if (tickVals.length > 0) {
+        colorbar.tickvals = tickVals;
+        colorbar.ticktext = tickText;
+      }
+
       Plotly.newPlot('overlap-heatmap', [{
-        type: 'heatmap', x: labels, y: labels, z: z,
+        type: 'heatmap', x: labels, y: labels, z: z, customdata: customdata,
         colorscale: [[0, '#cde2fb'], [0.25, '#6da7ec'], [0.5, '#2a78d6'], [0.75, '#1c5cab'], [1, '#0d366b']],
         hoverongaps: false,
-        hovertemplate: '%{y} \\u2229 %{x}: %{z:,} stars<extra></extra>',
-        colorbar: { title: { text: 'shared stars' } },
+        hovertemplate: '%{y} \\u2229 %{x}: %{customdata:,} stars<extra></extra>',
+        colorbar: colorbar,
       }], {
         margin: { t: 10, l: 150, r: 20, b: 150 },
         xaxis: { tickangle: -45, automargin: true },
@@ -1294,9 +1325,32 @@ INSTRUMENTS_TEMPLATE = """
       return { centers: [{ x: 0, y: 0 }, { x: dAB, y: 0 }, { x: cx, y: cy }], radii, tripleN };
     }
 
-    function labelAt(x, y, text) {
-      return '<text x="' + x + '" y="' + y + '" text-anchor="middle" dominant-baseline="middle" ' +
-        'font-family="monospace" font-size="13" fill="#0b0b0b">' + text + '</text>';
+    // Every region's count used to be drawn as text inside the SVG, positioned
+    // by an approximate geometric heuristic (near each region's rough
+    // centroid). That works for modestly-sized, well-separated circles, but
+    // confirmed live twice against real production archive sizes: once
+    // circles are large and heavily mutually overlapping (common once real
+    // archives share most of their stars, not just a synthetic test slice),
+    // their centers end up close together, so *any* "offset in some
+    // direction" heuristic -- for singles, pairs, or the triple -- crowds
+    // multiple labels into the same small area and renders overlapping,
+    // unreadable text. There's no in-diagram position guaranteed clear of
+    // every other label once circles can overlap arbitrarily, so every
+    // count now lists in a breakdown table below the diagram instead (color
+    // swatches tie each row back to which set(s) it's the intersection of)
+    // -- legible regardless of how squeezed the real geometry gets. The SVG
+    // itself only needs to convey the visual impression of overlap now, not
+    // carry any text.
+    function swatchesHtml(colorIndices) {
+      return colorIndices.map(ci =>
+        '<span style="display:inline-block;width:10px;height:10px;margin-right:2px;' +
+        'border-radius:2px;background:' + VENN_COLORS[ci] + ';"></span>'
+      ).join('');
+    }
+
+    function regionLabel(sets, cis) {
+      const names = cis.map(ci => sets[ci].display_name);
+      return names.join(' ∩ ') + (names.length === 1 ? ' only' : '');
     }
 
     function renderVenn() {
@@ -1331,61 +1385,39 @@ INSTRUMENTS_TEMPLATE = """
         svg += '<circle cx="' + c.x + '" cy="' + c.y + '" r="' + layout.radii[i] + '" fill="' + VENN_COLORS[i] +
           '" fill-opacity="0.5" stroke="' + VENN_COLORS[i] + '" stroke-width="2" />';
       });
-
-      const centroid = {
-        x: layout.centers.reduce((s, c) => s + c.x, 0) / layout.centers.length,
-        y: layout.centers.reduce((s, c) => s + c.y, 0) / layout.centers.length,
-      };
-
-      if (sets.length === 2) {
-        const n01 = pairOverlap(sets, 0, 1);
-        const onlyA = sets[0].n - n01, onlyB = sets[1].n - n01;
-        const c0 = layout.centers[0], c1 = layout.centers[1];
-        [[c0, c1, onlyA], [c1, c0, onlyB]].forEach(([from, other, val]) => {
-          const dx = from.x - other.x, dy = from.y - other.y;
-          const norm = Math.hypot(dx, dy) || 1;
-          svg += labelAt(from.x + dx / norm * 0.5 * layout.radii[layout.centers.indexOf(from)],
-                          from.y + dy / norm * 0.5 * layout.radii[layout.centers.indexOf(from)], val.toLocaleString());
-        });
-        svg += labelAt((c0.x + c1.x) / 2, (c0.y + c1.y) / 2, n01.toLocaleString());
-      } else {
-        const n01 = pairOverlap(sets, 0, 1), n02 = pairOverlap(sets, 0, 2), n12 = pairOverlap(sets, 1, 2);
-        const n012 = layout.tripleN;
-        const only = [
-          sets[0].n - n01 - n02 + n012,
-          sets[1].n - n01 - n12 + n012,
-          sets[2].n - n02 - n12 + n012,
-        ];
-        layout.centers.forEach((c, i) => {
-          const dx = c.x - centroid.x, dy = c.y - centroid.y;
-          const norm = Math.hypot(dx, dy) || 1;
-          svg += labelAt(c.x + dx / norm * 0.55 * layout.radii[i], c.y + dy / norm * 0.55 * layout.radii[i], only[i].toLocaleString());
-        });
-        const pairLabels = [
-          { mid: midpoint(layout.centers[0], layout.centers[1]), away: layout.centers[2], val: n01 - n012 },
-          { mid: midpoint(layout.centers[0], layout.centers[2]), away: layout.centers[1], val: n02 - n012 },
-          { mid: midpoint(layout.centers[1], layout.centers[2]), away: layout.centers[0], val: n12 - n012 },
-        ];
-        pairLabels.forEach(p => {
-          const dx = p.mid.x - p.away.x, dy = p.mid.y - p.away.y;
-          const norm = Math.hypot(dx, dy) || 1;
-          svg += labelAt(p.mid.x + dx / norm * 18, p.mid.y + dy / norm * 18, p.val.toLocaleString());
-        });
-        svg += labelAt(centroid.x, centroid.y, n012.toLocaleString());
-      }
       svg += '</svg>';
       document.getElementById('venn-svg-wrap').innerHTML = svg;
 
-      let legend = '<table><tr><th></th><th>Set</th><th>Total stars</th></tr>';
-      sets.forEach((s, i) => {
-        legend += '<tr><td><span style="display:inline-block;width:12px;height:12px;background:' + VENN_COLORS[i] +
-          ';border-radius:2px;"></span></td><td>' + s.display_name + '</td><td>' + s.n.toLocaleString() + '</td></tr>';
+      let breakdown;
+      if (sets.length === 2) {
+        const n01 = pairOverlap(sets, 0, 1);
+        breakdown = [
+          { cis: [0], val: sets[0].n - n01 },
+          { cis: [1], val: sets[1].n - n01 },
+          { cis: [0, 1], val: n01 },
+        ];
+      } else {
+        const n01 = pairOverlap(sets, 0, 1), n02 = pairOverlap(sets, 0, 2), n12 = pairOverlap(sets, 1, 2);
+        const n012 = layout.tripleN;
+        breakdown = [
+          { cis: [0], val: sets[0].n - n01 - n02 + n012 },
+          { cis: [1], val: sets[1].n - n01 - n12 + n012 },
+          { cis: [2], val: sets[2].n - n02 - n12 + n012 },
+          { cis: [0, 1], val: n01 - n012 },
+          { cis: [0, 2], val: n02 - n012 },
+          { cis: [1, 2], val: n12 - n012 },
+          { cis: [0, 1, 2], val: n012 },
+        ];
+      }
+
+      let legend = '<table><tr><th></th><th>Region</th><th>Stars</th></tr>';
+      breakdown.forEach(row => {
+        legend += '<tr><td>' + swatchesHtml(row.cis) + '</td><td>' + regionLabel(sets, row.cis) +
+          '</td><td>' + row.val.toLocaleString() + '</td></tr>';
       });
       legend += '</table>';
       document.getElementById('venn-legend').innerHTML = legend;
     }
-
-    function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 
     function setOverlapGranularity(g) {
       overlapGranularity = g;
