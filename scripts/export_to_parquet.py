@@ -488,6 +488,111 @@ LIMIT {TRIAGE_QUEUE_TOP_N}
 """
 
 
+# Star-overlap between archives/instruments -- backs the /instruments page's
+# overlap heatmap and Venn-diagram picker. A live per-request version would
+# need either a full self-join of spectroscopy_holdings against itself (a
+# multi-million-row x multi-million-row join for the biggest archives) or a
+# GROUP BY over the whole table, same OOM-shaped risk as everything else
+# precomputed here.
+#
+# Both queries take the same shape: first collapse each star down to the
+# small array of distinct archives/instruments its *matched* holdings span
+# (bounded by however many archives ever observed that one star -- typically
+# 1-3, rarely more than a handful even for the most-studied stars), then
+# UNNEST that array against itself (twice, for pairs; three times, for
+# triples) and count. This is NOT a cross join over the full table -- the
+# per-star arrays are what's crossed, so the work for one star is k^2 (or
+# k^3) where k is that star's own small archive/instrument count, not the
+# catalog's total row count. a<=b(<=c) keeps only one ordering per
+# unordered pair/triple and, as a side effect, includes the a==b(==c)
+# "self-pair" -- that's not wasted: it's exactly each set's own total
+# distinct-star count, so the heatmap's diagonal and the Venn picker's
+# per-circle totals come from this same query instead of a separate one.
+# The GROUP BY also means a combo that never co-occurs for any star simply
+# has no output row at all (implicit zero) rather than an explicit zero row
+# -- both tables stay small (low hundreds of archive rows; instrument pairs
+# are a bit more, bounded by how many distinct instruments ever share an
+# observer, still nowhere near a full N^2/N^3 of all possible combos).
+ARCHIVE_OVERLAP_QUERY = """
+WITH per_star AS (
+    SELECT star_id, array_agg(DISTINCT archive_code) AS codes
+    FROM pg.spectroscopy_holdings
+    WHERE match_status = 'matched' AND star_id IS NOT NULL
+    GROUP BY star_id
+)
+SELECT
+    a.archive_code AS archive_a, da.display_name AS display_a,
+    b.archive_code AS archive_b, db.display_name AS display_b,
+    count(*) AS n_overlap
+FROM per_star, UNNEST(codes) AS a(archive_code), UNNEST(codes) AS b(archive_code)
+JOIN pg.archives da ON da.archive_code = a.archive_code
+JOIN pg.archives db ON db.archive_code = b.archive_code
+WHERE a.archive_code <= b.archive_code
+GROUP BY 1, 2, 3, 4
+ORDER BY 1, 3
+"""
+
+# Triple overlap (a<=b<=c, including the a==b==c self-triple -- redundant
+# with ARCHIVE_OVERLAP_QUERY's diagonal, kept anyway since dropping just the
+# self-triples would need an extra filter for no real size benefit at this
+# table's scale) -- needed for the picker's 3-circle case, since a
+# proportional 3-circle Venn needs the true center (A∩B∩C) region size, not
+# just the three pairwise overlaps.
+ARCHIVE_OVERLAP_TRIPLE_QUERY = """
+WITH per_star AS (
+    SELECT star_id, array_agg(DISTINCT archive_code) AS codes
+    FROM pg.spectroscopy_holdings
+    WHERE match_status = 'matched' AND star_id IS NOT NULL
+    GROUP BY star_id
+)
+SELECT
+    a.archive_code AS archive_a, b.archive_code AS archive_b, c.archive_code AS archive_c,
+    count(*) AS n_overlap
+FROM per_star,
+     UNNEST(codes) AS a(archive_code), UNNEST(codes) AS b(archive_code), UNNEST(codes) AS c(archive_code)
+WHERE a.archive_code <= b.archive_code AND b.archive_code <= c.archive_code
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3
+"""
+
+# Same shape as ARCHIVE_OVERLAP_QUERY/ARCHIVE_OVERLAP_TRIPLE_QUERY, but keyed
+# by instrument instead of archive_code -- one archive can host several
+# instruments (see INSTRUMENTS_QUERY above), and "which instruments share
+# stars" is a finer-grained, separate question from "which archives share
+# stars". instrument is nullable (not every archive reports one), filtered
+# out here the same way INSTRUMENTS_QUERY does.
+INSTRUMENT_OVERLAP_QUERY = """
+WITH per_star AS (
+    SELECT star_id, array_agg(DISTINCT instrument) AS insts
+    FROM pg.spectroscopy_holdings
+    WHERE match_status = 'matched' AND star_id IS NOT NULL AND instrument IS NOT NULL
+    GROUP BY star_id
+)
+SELECT a.instrument AS instrument_a, b.instrument AS instrument_b, count(*) AS n_overlap
+FROM per_star, UNNEST(insts) AS a(instrument), UNNEST(insts) AS b(instrument)
+WHERE a.instrument <= b.instrument
+GROUP BY 1, 2
+ORDER BY 1, 2
+"""
+
+INSTRUMENT_OVERLAP_TRIPLE_QUERY = """
+WITH per_star AS (
+    SELECT star_id, array_agg(DISTINCT instrument) AS insts
+    FROM pg.spectroscopy_holdings
+    WHERE match_status = 'matched' AND star_id IS NOT NULL AND instrument IS NOT NULL
+    GROUP BY star_id
+)
+SELECT
+    a.instrument AS instrument_a, b.instrument AS instrument_b, c.instrument AS instrument_c,
+    count(*) AS n_overlap
+FROM per_star,
+     UNNEST(insts) AS a(instrument), UNNEST(insts) AS b(instrument), UNNEST(insts) AS c(instrument)
+WHERE a.instrument <= b.instrument AND b.instrument <= c.instrument
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3
+"""
+
+
 def _fetch_all(con: duckdb.DuckDBPyConnection, sql: str) -> list[dict]:
     con.execute(sql)
     cols = [c[0] for c in con.description]
@@ -586,6 +691,22 @@ def export_tables(database_url: str, out_dir: str) -> None:
         triage_queue_path = os.path.join(out_dir, "triage_queue.parquet")
         _atomic_copy(con, TRIAGE_QUEUE_QUERY, triage_queue_path)
         logger.info("exported triage_queue -> %s", triage_queue_path)
+
+        archive_overlap_path = os.path.join(out_dir, "archive_overlap.parquet")
+        _atomic_copy(con, ARCHIVE_OVERLAP_QUERY, archive_overlap_path)
+        logger.info("exported archive_overlap -> %s", archive_overlap_path)
+
+        archive_overlap_triple_path = os.path.join(out_dir, "archive_overlap_triple.parquet")
+        _atomic_copy(con, ARCHIVE_OVERLAP_TRIPLE_QUERY, archive_overlap_triple_path)
+        logger.info("exported archive_overlap_triple -> %s", archive_overlap_triple_path)
+
+        instrument_overlap_path = os.path.join(out_dir, "instrument_overlap.parquet")
+        _atomic_copy(con, INSTRUMENT_OVERLAP_QUERY, instrument_overlap_path)
+        logger.info("exported instrument_overlap -> %s", instrument_overlap_path)
+
+        instrument_overlap_triple_path = os.path.join(out_dir, "instrument_overlap_triple.parquet")
+        _atomic_copy(con, INSTRUMENT_OVERLAP_TRIPLE_QUERY, instrument_overlap_triple_path)
+        logger.info("exported instrument_overlap_triple -> %s", instrument_overlap_triple_path)
 
         export_stats_summary(con, out_dir)
     finally:
