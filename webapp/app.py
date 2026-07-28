@@ -1068,6 +1068,172 @@ def _known_as(row: dict) -> str:
 INSTRUMENT_SKY_SAMPLE_TOP_N = 12
 INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT = 2000
 
+# Resolving power (R = lambda/delta-lambda) per (archive display_name,
+# instrument) -- like NOT_YET_TRACKED below, this can't be derived from the
+# database (holdings don't carry it) so it's hand-maintained from each
+# instrument's published specs. Keyed by (display_name, instrument) rather
+# than instrument name alone because a few names collide across archives
+# (e.g. "OSIRIS" is a different instrument at Keck vs. GTC). Many real
+# spectrographs offer several gratings/modes with different R -- shown as a
+# range where that's the common case rather than picking one mode
+# arbitrarily. "n/a" marks instruments that are primarily imagers with no
+# (or only a fixed low-R grism) spectroscopic mode; "—" marks instruments
+# not yet looked up, mostly retired/obscure ones lacking an easily
+# confirmed spec.
+INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
+    ('Asiago Observatory (Echelle)', 'Echelle + Andor iKon DW436-BV'): 'R ≈ 20,000',
+    ('Asiago Observatory (Echelle)', 'echelle hi-res Spectrograph'): 'R ≈ 20,000',
+    ('Asiago Observatory (Echelle)', 'Echelle Hi-Res Spectrograph'): 'R ≈ 20,000',
+    ('Asiago Observatory (Echelle)', 'ECHELLE REOSC'): 'R ≈ 20,000',
+    ('CARMENES', 'CARMENES VIS'): 'R ≈ 94,600',
+    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES NIR'): 'R ≈ 80,600',
+    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES VIS'): 'R ≈ 94,600',
+    ('CFHT / CADC', 'SPIRou'): 'R ≈ 70,000',
+    ('CFHT / CADC', 'ESPaDOnS'): 'R ≈ 68,000 (spectroscopy mode)',
+    ('CFHT / CADC', 'MegaPrime'): 'n/a (wide-field imager)',
+    ('CFHT / CADC', 'UH8K'): 'n/a (imaging mosaic camera)',
+    ('CFHT / CADC', 'HRCAM'): 'n/a (imaging camera)',
+    ('CFHT / CADC', 'FTS'): 'R ≈ 100,000+ (Fourier Transform Spectrometer, variable)',
+    ('CFHT / CADC', 'GECKO'): 'R ≈ 120,000 (fiber-fed echelle)',
+    ('CFHT / CADC', 'TIGER'): 'R ≈ 1,600–3,600 (integral-field, grism-dependent)',
+    ('CFHT / CADC', 'MOS'): 'R ≈ 400–3,000 (grism-dependent, retired)',
+    ('CFHT / CADC', 'SIS'): 'R ≈ 400–3,000 (grism-dependent, retired)',
+    ('CFHT / CADC', 'OSIS'): '—',
+    ('CFHT / CADC', 'PUMA'): '—',
+    ('CFHT / CADC', 'SISFP'): '—',
+    ('CFHT / CADC', 'HERZBERG'): '—',
+    ('CFHT / CADC', 'ISIS'): '—',
+    ('CFHT / CADC', 'PYTHIAS'): '—',
+    ('DAO (Dominion Astrophysical Observatory)', 'McKellar Spectrograph'): 'R ≈ 10,000–20,000 (grating-dependent)',
+    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectrograph'): 'R ≈ 1,000–12,000 (grating-dependent)',
+    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectropolarimeter'): 'R ≈ 1,000–5,000 (grating-dependent)',
+    ('DAO (Dominion Astrophysical Observatory)', 'Radial-Velocity Scanner'): '—',
+    ('DESI', 'DESI'): 'R ≈ 2,000–5,500 (wavelength-dependent)',
+    ('ELODIE (OHP)', 'ELODIE'): 'R ≈ 42,000',
+    ('ESO Science Archive', 'GIRAFFE'): 'R ≈ 6,000–30,000 (mode-dependent)',
+    ('ESO Science Archive', 'HARPS'): 'R ≈ 115,000',
+    ('ESO Science Archive', 'XSHOOTER'): 'R ≈ 3,000–17,000 (arm/slit-dependent)',
+    ('ESO Science Archive', 'VIMOS'): 'R ≈ 200–2,500 (grism-dependent)',
+    ('ESO Science Archive', 'FORS2'): 'R ≈ 260–2,600 (grism-dependent)',
+    ('ESO Science Archive', 'UVES'): 'R ≈ 40,000–110,000 (slit-dependent)',
+    ('ESO Science Archive', 'FEROS'): 'R ≈ 48,000',
+    ('ESO Science Archive', 'NIRPS'): 'R ≈ 100,000',
+    ('ESO Science Archive', 'ESPRESSO'): 'R ≈ 70,000–190,000 (mode-dependent)',
+    ('ESO Science Archive', 'EFOSC'): 'R ≈ 600–2,500 (grism-dependent)',
+    ('ESO Science Archive', 'KMOS'): 'R ≈ 1,500–4,000 (grating-dependent)',
+    ('ESO Science Archive', 'CRIRES'): 'R ≈ 50,000–100,000+ (slit-dependent)',
+    ('ESO Science Archive', 'SOFI'): 'R ≈ 600–1,800 (grism-dependent)',
+    ('ESO Science Archive', 'APEXHET'): '—',
+    ('ESO Science Archive', 'FORS1'): 'R ≈ 260–2,600 (grism-dependent, retired)',
+    ('ESO Science Archive', ''): '—',
+    ('ESO Science Archive', 'MUSE'): 'R ≈ 1,700–4,000',
+    ('ESO Science Archive', 'SINFONI'): 'R ≈ 1,500–4,000 (grating-dependent)',
+    ('FEROS Public Spectra (GAVO)', 'FEROS'): 'R ≈ 48,000',
+    ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): 'R ≈ 20,000',
+    ('GALAH', 'GALAH (HERMES)'): 'R ≈ 28,000',
+    ('GTC (Gran Telescopio CANARIAS)', 'EMIR'): 'R ≈ 4,000–5,000 (MOS mode)',
+    ('GTC (Gran Telescopio CANARIAS)', 'OSIRIS'): 'R ≈ 300–2,500 (grism-dependent)',
+    ('GTC (Gran Telescopio CANARIAS)', 'MEGARA'): 'R ≈ 6,000–20,000 (LR/MR/HR modes)',
+    ('GTC (Gran Telescopio CANARIAS)', 'HORuS'): 'R ≈ 25,000',
+    ('GTC (Gran Telescopio CANARIAS)', 'CANARICAM'): 'R ≈ 175–1,300 (mode-dependent)',
+    ('Gaia RVS', 'Gaia RVS'): 'R ≈ 11,500',
+    ('Gemini Observatory Archive', 'GNIRS'): 'R ≈ 500–18,000 (mode-dependent)',
+    ('Gemini Observatory Archive', 'GMOS-N'): 'R ≈ 400–5,000 (grating-dependent)',
+    ('Gemini Observatory Archive', 'GMOS-S'): 'R ≈ 400–5,000 (grating-dependent)',
+    ('Gemini Observatory Archive', 'PHOENIX'): 'R ≈ 50,000',
+    ('Gemini Observatory Archive', 'GPI'): 'R ≈ 35–90 (IFS mode)',
+    ('Gemini Observatory Archive', 'NIRI'): 'R ≈ 500–1,300 (grism mode)',
+    ('Gemini Observatory Archive', 'NIFS'): 'R ≈ 5,290',
+    ('Gemini Observatory Archive', 'F2'): 'R ≈ 900–3,600 (grating-dependent)',
+    ('Gemini Observatory Archive', 'GRACES'): 'R ≈ 40,000–67,500 (mode-dependent)',
+    ('Gemini Observatory Archive', 'MAROON-X'): 'R ≈ 85,000',
+    ('Gemini Observatory Archive', 'michelle'): 'R ≈ up to 30,000 (echelle mode, retired)',
+    ('Gemini Observatory Archive', 'TEXES'): 'R ≈ up to 100,000',
+    ('Gemini Observatory Archive', 'TReCS'): 'R ≈ 100–1,000 (retired)',
+    ('Gemini Observatory Archive', 'GHOST'): 'R ≈ 50,000 / 75,000 (standard/high-res mode)',
+    ('Gemini Observatory Archive', 'FLAMINGOS'): 'R ≈ 1,300 (low-res, retired)',
+    ('Gemini Observatory Archive', 'CIRPASS'): '—',
+    ('Gemini Observatory Archive', 'bHROS'): 'R ≈ 150,000 (retired)',
+    ('Gemini Observatory Archive', 'OSCIR'): '—',
+    ('Gemini Observatory Archive — GHOST', 'GHOST'): 'R ≈ 50,000 / 75,000 (standard/high-res mode)',
+    ('Gemini Observatory Archive — IGRINS', 'IGRINS'): 'R ≈ 45,000',
+    ('HARPS-N (TNG)', 'HARPS-N'): 'R ≈ 115,000',
+    ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): 'R ≈ 25,000–86,000 (mode-dependent)',
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): 'R ≈ 600–8,000 (grating-dependent)',
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): 'R ≈ 600–8,000 (grating-dependent)',
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): 'R ≈ 600–8,000 (grating-dependent)',
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): 'R ≈ 600–8,000 (grating-dependent)',
+    ('Keck Observatory Archive', 'NIRSPEC'): 'R ≈ 2,000–25,000 (mode-dependent)',
+    ('Keck Observatory Archive', 'HIRES'): 'R ≈ 25,000–85,000 (slit-dependent)',
+    ('Keck Observatory Archive', 'MOSFIRE'): 'R ≈ 3,600',
+    ('Keck Observatory Archive', 'LRIS'): 'R ≈ 300–2,500 (grism/grating-dependent)',
+    ('Keck Observatory Archive', 'NIRES'): 'R ≈ 2,700',
+    ('Keck Observatory Archive', 'OSIRIS'): 'R ≈ 3,800 (near-IR IFU)',
+    ('Keck Observatory Archive', 'DEIMOS'): 'R ≈ 1,000–6,000 (grating-dependent)',
+    ('Keck Observatory Archive', 'KPF'): 'R ≈ 98,000 (also 35,000 simultaneous mode)',
+    ('Keck Observatory Archive', 'ESI'): 'R ≈ 1,000–8,000 (mode-dependent)',
+    ('LAMOST', 'LAMOST'): 'R ≈ 1,800',
+    ('LAMOST — MRS', 'LAMOST-MRS'): 'R ≈ 7,500',
+    ('LBT — PEPSI', 'MODS'): 'R ≈ 1,000–3,000 (grating-dependent)',
+    ('LBT — PEPSI', 'LUCI'): 'R ≈ 4,000–8,000 (mode-dependent)',
+    ('LBT — PEPSI', 'PEPSI'): 'R ≈ 43,000–320,000 (mode-dependent)',
+    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): 'R ≈ 100,000',
+    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): 'R ≈ 600–2,000 (Kast, grating-dependent)',
+    ('MAST', 'WFC3/IR'): 'R ≈ 130 (grism mode)',
+    ('MAST', 'COS/FUV'): 'R ≈ 2,400–24,000 (grating-dependent)',
+    ('MAST', 'STIS/CCD'): 'R ≈ 500–114,000 (mode-dependent)',
+    ('MAST', 'NICMOS/NIC3'): 'R ≈ 200 (grism mode)',
+    ('MAST', 'HRS/2'): 'R ≈ 2,000–100,000 (grating-dependent, retired GHRS)',
+    ('MAST', 'FOS/RD'): 'R ≈ 250–1,300 (grating-dependent, retired)',
+    ('MAST', 'STIS/FUV-MAMA'): 'R ≈ 500–114,000 (mode-dependent)',
+    ('MAST', 'FOS/BL'): 'R ≈ 250–1,300 (grating-dependent, retired)',
+    ('MAST', 'COS/NUV'): 'R ≈ 2,400–24,000 (grating-dependent)',
+    ('MAST', 'STIS/NUV-MAMA'): 'R ≈ 500–114,000 (mode-dependent)',
+    ('MAST', 'COS'): 'R ≈ 2,400–24,000 (grating-dependent)',
+    ('MAST', 'STIS'): 'R ≈ 500–114,000 (mode-dependent)',
+    ('MAST', 'WFC3/UVIS'): 'n/a (imaging, no grism)',
+    ('MAST', 'ACS/HRC'): 'R ≈ 100 (grism/prism mode, retired)',
+    ('MAST', 'HRS/1'): 'R ≈ 2,000–100,000 (grating-dependent, retired GHRS)',
+    ('MAST', 'ACS/WFC'): 'R ≈ 100 (grism mode)',
+    ('MAST', 'ACS/SBC'): 'R ≈ 100 (grism mode)',
+    ('MAST', 'COS-STIS'): '—',
+    ('MAST', 'FOC/96'): 'n/a (imaging camera)',
+    ('MAST', 'FOC/48'): 'n/a (imaging camera)',
+    ('MAST', 'FOC/288'): 'n/a (imaging camera)',
+    ('MAST — JWST', 'NIRSPEC/MSA'): 'R ≈ 100–2,700 (mode-dependent)',
+    ('MAST — JWST', 'NIRCAM/GRISM'): 'R ≈ 1,600',
+    ('MAST — JWST', 'NIRSPEC/SLIT'): 'R ≈ 100–2,700 (mode-dependent)',
+    ('MAST — JWST', 'NIRISS/WFSS'): 'R ≈ 150',
+    ('MAST — JWST', 'MIRI/SLIT'): 'R ≈ 40–160 (LRS)',
+    ('MAST — JWST', 'NIRSPEC'): 'R ≈ 100–2,700 (mode-dependent)',
+    ('MAST — JWST', 'MIRI/SLITLESS'): 'R ≈ 40–160 (LRS)',
+    ('MAST — JWST', 'NIRCAM/IMAGE'): 'n/a (imaging)',
+    ('MAST — JWST', 'NIRCAM/TARGACQ'): 'n/a (target acquisition)',
+    ('MAST — JWST', 'MIRI/IMAGE'): 'n/a (imaging)',
+    ('MAST — JWST', 'NIRISS/SOSS'): 'R ≈ 700',
+    ('NAOJ (Subaru HDS, via JVO)', 'HDS'): 'R ≈ 45,000–160,000 (slit-dependent)',
+    ('NOIRLab Astro Data Archive', 'goodman'): 'R ≈ 300–4,500 (grating-dependent)',
+    ('NOIRLab Astro Data Archive', 'echelle'): 'R ≈ 40,000–45,000 (CTIO echelle)',
+    ('NOIRLab Astro Data Archive', 'chiron'): 'R ≈ 28,000–90,000 (mode-dependent)',
+    ('NOIRLab Astro Data Archive', 'triplespec'): 'R ≈ 2,700–3,500',
+    ('NOIRLab Astro Data Archive', 'sami'): '—',
+    ('NOIRLab Astro Data Archive', 'ghts_red'): 'R ≈ 300–4,500 (grating-dependent)',
+    ('NOIRLab Astro Data Archive', 'arcoiris'): 'R ≈ 3,500',
+    ('NOIRLab Astro Data Archive', 'cosmos'): 'R ≈ 300–3,000 (grating-dependent)',
+    ('NOIRLab Astro Data Archive', 'kosmos'): 'R ≈ 500–5,000 (grating-dependent)',
+    ('NOIRLab Astro Data Archive', 'ghts_blue'): 'R ≈ 300–4,500 (grating-dependent)',
+    ('OIRSA (CfA)', 'Hectospec'): 'R ≈ 1,000–2,500 (grating-dependent)',
+    ('OIRSA (CfA)', 'Hectochelle'): 'R ≈ 20,000–40,000 (order-dependent)',
+    ('OIRSA (CfA)', 'echelle'): 'R ≈ 25,000–44,000 (FLWO 1.5m echelle)',
+    ('OIRSA (CfA)', 'FAST'): 'R ≈ 1,000–4,000 (grating-dependent)',
+    ('RAVE', 'RAVE'): 'R ≈ 7,500',
+    ('SALT HRS (SAAO SSDA)', 'HRS'): 'R ≈ 15,000–65,000 (LR/MR/HR/HS mode)',
+    ('SDSS Legacy Optical', 'SDSS/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
+    ('SDSS-V — APOGEE', 'APOGEE'): 'R ≈ 22,500',
+    ('SDSS-V — Optical', 'SDSS-V/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
+    ('SOPHIE (OHP)', 'SOPHIE'): 'R ≈ 39,000–75,000 (HE/HR mode)',
+}
+
 INSTRUMENTS_TEMPLATE = """
 <!doctype html>
 <html>
@@ -1105,6 +1271,21 @@ INSTRUMENTS_TEMPLATE = """
   {% else %}
     <p>No instrument data yet.</p>
   {% endif %}
+
+  <hr>
+  <h2>Tracked instruments</h2>
+  <p class="note">Every distinct instrument name seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) for each -- hand-maintained from published instrument specs, not derived from the database. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it. Many spectrographs offer several gratings or modes with different R; a range is shown where that's the common case rather than picking one mode arbitrarily. "n/a" marks instruments that are primarily imagers; "&mdash;" marks ones not yet looked up.</p>
+  {% for a in instruments %}
+  <details>
+    <summary>{{ a.display_name }} ({{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }})</summary>
+    <table>
+      <tr><th>Instrument</th><th>Holdings</th><th>Resolving power</th></tr>
+      {% for i in a.instruments %}
+      <tr><td>{{ i.instrument }}</td><td>{{ "{:,}".format(i.n) }}</td><td>{{ i.resolving_power }}</td></tr>
+      {% endfor %}
+    </table>
+  </details>
+  {% endfor %}
 
   <hr>
   <h2>Where each instrument points</h2>
@@ -1494,6 +1675,18 @@ def instruments_page():
         treemap_parents.append(r["display_name"])
         treemap_values.append(r["n"])
 
+    instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        instruments_by_archive[r["display_name"]].append({
+            "instrument": r["instrument"],
+            "n": r["n"],
+            "resolving_power": INSTRUMENT_RESOLVING_POWER.get((r["display_name"], r["instrument"]), "—"),
+        })
+    instruments = [
+        {"display_name": name, "instruments": insts}
+        for name, insts in instruments_by_archive.items()
+    ]
+
     # instrument_sky_sample is precomputed by scripts.export_to_parquet --
     # see INSTRUMENT_SKY_SAMPLE_QUERY there for why (a live per-request
     # ROW_NUMBER()/random() sample over the full holdings table has the same
@@ -1548,6 +1741,7 @@ def instruments_page():
     return render_template_string(
         INSTRUMENTS_TEMPLATE,
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
+        instruments=instruments,
         sky_traces=sky_traces,
         top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
         archive_items=archive_items, archive_pairs=archive_pairs, archive_triples=archive_triples,
@@ -1598,7 +1792,7 @@ ARCHIVE_STATUS_TEMPLATE = """
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
-  <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Leaderboard tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them.</p>
+  <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Leaderboard tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them. See the Instruments tab for the per-archive instrument breakdown, including resolving power.</p>
   <table>
     <tr>
       <th>Archive</th><th>Last synced</th><th>Status</th><th>Observations span</th><th>Total</th>
@@ -1615,21 +1809,6 @@ ARCHIVE_STATUS_TEMPLATE = """
     </tr>
     {% endfor %}
   </table>
-
-  <hr>
-  <h2>Tracked instruments</h2>
-  <p class="note">Every distinct instrument name seen in current holdings, grouped by archive. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it.</p>
-  {% for a in instruments %}
-  <details>
-    <summary>{{ a.display_name }} ({{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }})</summary>
-    <table>
-      <tr><th>Instrument</th><th>Holdings</th></tr>
-      {% for i in a.instruments %}
-      <tr><td>{{ i.instrument }}</td><td>{{ "{:,}".format(i.n) }}</td></tr>
-      {% endfor %}
-    </table>
-  </details>
-  {% endfor %}
 
   <hr>
   <h2>Known gaps</h2>
@@ -1696,21 +1875,10 @@ def archive_status():
         for code in order
     ]
 
-    cur.execute("SELECT display_name, instrument, n FROM instruments ORDER BY display_name, n DESC")
-    instrument_rows = _rows_as_dicts(cur)
-    instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
-    for r in instrument_rows:
-        instruments_by_archive[r["display_name"]].append({"instrument": r["instrument"], "n": r["n"]})
-    instruments = [
-        {"display_name": name, "instruments": insts}
-        for name, insts in instruments_by_archive.items()
-    ]
-
     return render_template_string(
         ARCHIVE_STATUS_TEMPLATE,
         archives=archives,
         category_labels=[label for _, label in ARCHIVE_STATUS_CATEGORIES],
-        instruments=instruments,
         not_yet_tracked=NOT_YET_TRACKED,
         active_tab="archive_status",
     )
@@ -1744,7 +1912,7 @@ INFO_TEMPLATE = """
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
   </ul>
 
-  <p class="note">See the Archive Status tab for when each archive was last synced, a per-archive match breakdown, and the tracked-instruments/known-gaps tables, and the Leaderboard tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
+  <p class="note">See the Archive Status tab for when each archive was last synced, a per-archive match breakdown, and the known-gaps table; the Instruments tab for the tracked-instruments/resolving-power breakdown; and the Leaderboard tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
 
   <h2>Needs-review queue</h2>
   <p class="note">Either an ambiguous positional match (2+ tracked stars fell within the 1.0" radius of the archive's reported position) or a name match rejected as implausible with no positional candidate to fall back on (see How matching works above) — in both cases no single star was assigned automatically. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
