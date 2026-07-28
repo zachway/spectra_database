@@ -18,7 +18,15 @@ def conn():
             "INSERT INTO archives (archive_code, display_name) "
             "VALUES ('unit_test', 'Unit Test Archive') ON CONFLICT DO NOTHING"
         )
-        cur.execute("DELETE FROM spectroscopy_holdings WHERE archive_code = 'unit_test'")
+        cur.execute(
+            # 'noirlab' alongside 'unit_test': instrument-radius-override
+            # tests must use that exact archive_code to exercise the
+            # override (it's keyed on (archive_code, instrument)), so its
+            # test rows need the same cleanup -- otherwise a leftover row
+            # referencing a test-range star_id blocks the DELETE FROM stars
+            # below with a foreign key violation on the next test run.
+            "DELETE FROM spectroscopy_holdings WHERE archive_code IN ('unit_test', 'noirlab')"
+        )
         cur.execute(
             "DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s",
             (TEST_ID_LOW, TEST_ID_HIGH),

@@ -352,6 +352,57 @@ def test_positional_match_survives_prefilter_for_fast_proper_motion(conn):
     assert gaia_id == 900000000000000060
 
 
+def test_instrument_radius_override_recovers_offset_beyond_default_radius(conn):
+    """noirlab/chiron carries a confirmed real pointing offset well beyond
+    EASY_MATCH_RADIUS_ARCSEC (see INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC's
+    docstring) -- a record whose raw position is off by more than 1" but
+    still within its override radius must match, using archive_code=noirlab,
+    instrument=chiron specifically (not just any archive/instrument).
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000090, 120.0, -15.0)
+    conn.commit()
+
+    assert matcher.INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC[("noirlab", "chiron")] > 30.0
+    ra, dec = _offset(120.0, -15.0, 45.0, 30.0)  # well outside 1", inside the chiron override
+    rec = RawObservation(
+        archive_obs_id="chiron-1", archive_url="http://example.test/chiron1",
+        instrument="chiron", ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+    )
+    counts = matcher.match_records(conn, "noirlab", [rec])
+    assert counts["positional_matched"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT s.gaia_source_id, h.match_status FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='noirlab' AND h.archive_obs_id='chiron-1'"
+        )
+        gaia_id, status = cur.fetchone()
+    assert gaia_id == 900000000000000090
+    assert status == "matched"
+
+
+def test_instrument_radius_override_does_not_apply_to_other_instruments(conn):
+    """The same 30" offset on a plain noirlab instrument (not chiron) must
+    stay outside EASY_MATCH_RADIUS_ARCSEC and skip, same as any other
+    archive -- the override is keyed on (archive_code, instrument), not just
+    archive_code.
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000091, 130.0, -25.0)
+    conn.commit()
+
+    ra, dec = _offset(130.0, -25.0, 45.0, 30.0)
+    rec = RawObservation(
+        archive_obs_id="goodman-1", archive_url="http://example.test/goodman1",
+        instrument="goodman", ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+    )
+    counts = matcher.match_records(conn, "noirlab", [rec])
+    assert counts["skipped"] == 1
+    assert counts["positional_matched"] == 0
+
+
 def test_bogus_sentinel_dec_does_not_crash(conn):
     """Confirmed live: MAST reports dec=-99.0 (not masked/None, a genuine
     present-but-physically-invalid sentinel) for calibration exposures
