@@ -23,6 +23,16 @@ Usage:
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.reconcile_name_matches
     # scoped to one suspect name (faster, e.g. for a quick before/after check):
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.reconcile_name_matches --name Mira
+    # scoped to one archive/instrument: use this once an offset sweep has
+    # confirmed genuine wrong-star name collisions for that specific pair.
+    # Don't run this unscoped, or against an archive/instrument that hasn't
+    # been checked this way -- an instrument whose *stored* raw_ra/raw_dec is
+    # simply inaccurate (e.g. old archival coordinates never precessed to
+    # J2000) will have already-correct name-resolved matches that fail this
+    # sanity check purely because the position on file is bad, not because
+    # the star assignment is wrong; reconciling those would incorrectly
+    # demote good matches to skipped/needs_review.
+    DATABASE_URL=postgresql:///spectra_local python3 -m scripts.reconcile_name_matches --archive koa --instrument NIRSPEC
 """
 
 from __future__ import annotations
@@ -44,7 +54,12 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 2000
 
 
-def _load_candidates(conn: psycopg.Connection, name_filter: str | None) -> dict[str, list[RawObservation]]:
+def _load_candidates(
+    conn: psycopg.Connection,
+    name_filter: str | None,
+    archive_filter: str | None = None,
+    instrument_filter: str | None = None,
+) -> dict[str, list[RawObservation]]:
     query = """
         SELECT archive_code, archive_obs_id, archive_url, instrument, obs_date, program_id,
                raw_target_name, raw_ra, raw_dec
@@ -56,6 +71,12 @@ def _load_candidates(conn: psycopg.Connection, name_filter: str | None) -> dict[
     if name_filter:
         query += " AND raw_target_name = %s"
         params.append(name_filter)
+    if archive_filter:
+        query += " AND archive_code = %s"
+        params.append(archive_filter)
+    if instrument_filter:
+        query += " AND instrument = %s"
+        params.append(instrument_filter)
 
     with conn.cursor() as cur:
         cur.execute(query, params)
@@ -79,8 +100,13 @@ def _load_candidates(conn: psycopg.Connection, name_filter: str | None) -> dict[
     return by_archive
 
 
-def reconcile(conn: psycopg.Connection, name_filter: str | None = None) -> dict:
-    by_archive = _load_candidates(conn, name_filter)
+def reconcile(
+    conn: psycopg.Connection,
+    name_filter: str | None = None,
+    archive_filter: str | None = None,
+    instrument_filter: str | None = None,
+) -> dict:
+    by_archive = _load_candidates(conn, name_filter, archive_filter, instrument_filter)
     total_candidates = sum(len(v) for v in by_archive.values())
     logger.info("%d existing name_resolved matches to re-check across %d archives", total_candidates, len(by_archive))
 
@@ -128,10 +154,12 @@ def reconcile(conn: psycopg.Connection, name_filter: str | None = None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--name", default=None, help="only re-check matches whose raw_target_name equals this (e.g. Mira)")
+    parser.add_argument("--archive", default=None, help="only re-check matches from this archive_code")
+    parser.add_argument("--instrument", default=None, help="only re-check matches from this instrument")
     args = parser.parse_args()
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        totals = reconcile(conn, name_filter=args.name)
+        totals = reconcile(conn, name_filter=args.name, archive_filter=args.archive, instrument_filter=args.instrument)
     logger.info("done: %s", totals)
 
 
