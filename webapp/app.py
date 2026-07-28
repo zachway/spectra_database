@@ -2244,6 +2244,14 @@ def _fetch_triage_submissions_uncached() -> tuple[list[dict], str | None]:
 # radius costs nothing but a few more candidate rows to look at.
 TRIAGE_CONE_SEARCH_RADIUS_ARCSEC = 20.0
 
+# Matches sync.matcher.NAME_MATCH_SANITY_RADIUS_ARCSEC (600" / 10') -- the
+# same "is this plausibly one star" cutoff used there for name-matched
+# records, reused here to warn when a triage group's own member positions
+# (see export_to_parquet.py's position_spread_deg) don't actually agree with
+# each other. Duplicated rather than imported so webapp.app doesn't have to
+# pull in sync.matcher's live-sync dependencies for one constant.
+TRIAGE_POSITION_SPREAD_WARN_DEG = 600.0 / 3600.0
+
 # Same TAP pattern as ingest.add_star's GAIA_CONE_QUERY (see add_star.py:70-77),
 # but also pulls phot_g_mean_mag and orders by it -- the design notes call for
 # showing the *actual* query result (nothing found, or only much-fainter
@@ -2287,6 +2295,7 @@ TRIAGE_TEMPLATE = """
     .mood-image { float: right; max-width: 140px; margin: 0 0 0.5rem 1rem; }
     .triage-progress { display: flex; justify-content: space-between; align-items: baseline; }
     .skip-link { white-space: nowrap; margin-left: 1rem; }
+    .spread-warning { color: #a00; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -2337,6 +2346,9 @@ TRIAGE_TEMPLATE = """
       {{ r.raw_target_name or "(no reported name)" }}
       {% if r.raw_ra is not none and r.raw_dec is not none %}
         at RA {{ "%.5f"|format(r.raw_ra) }}, Dec {{ "%.5f"|format(r.raw_dec) }}
+        {% if r.position_spread_deg is not none and r.position_spread_deg > position_spread_warn_deg %}
+          <span class="spread-warning" title="This name's own records don't all report the same position -- the coordinate above is just one record's, not necessarily representative of the group">&#9888; records under this name disagree by {{ "%.1f"|format(r.position_spread_deg) }}&deg; -- may not be one star</span>
+        {% endif %}
       {% else %}
         (no reported position)
       {% endif %}
@@ -2526,7 +2538,8 @@ def triage():
     cur.execute(
         """
         SELECT archive_code, display_name, group_key, raw_target_name, n_records,
-               archive_obs_ids, archive_urls, raw_ra, raw_dec, obs_date, instrument, updated_at
+               archive_obs_ids, archive_urls, raw_ra, raw_dec, position_spread_deg,
+               obs_date, instrument, updated_at
         FROM triage_queue
         """
     )
@@ -2604,7 +2617,7 @@ def triage():
         error=request.args.get("error"), note=request.args.get("note"),
         submissions_error=submissions_error, triage_cone_search_radius=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC,
         offset=offset, total=total, skip_query=urlencode({"offset": offset + 1}),
-        submitter_prefill=submitter,
+        submitter_prefill=submitter, position_spread_warn_deg=TRIAGE_POSITION_SPREAD_WARN_DEG,
     ))
     if request.cookies.get(TRIAGE_SEED_COOKIE) != seed:
         resp.set_cookie(TRIAGE_SEED_COOKIE, seed, max_age=TRIAGE_COOKIE_MAX_AGE_SECONDS, samesite="Lax")
