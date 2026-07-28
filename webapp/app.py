@@ -533,11 +533,23 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
     star.
     """
     if query.isdigit():
-        cur.execute(
-            "SELECT * FROM stars WHERE gaia_source_id = ? OR bsc_hr_number = ?",
-            [int(query), int(query)],
-        )
+        # Two separate single-column queries, not one `OR`-joined query --
+        # confirmed live that combining them defeats DuckDB's Parquet
+        # predicate pushdown entirely (bsc_hr_number has no usable row-group
+        # stats, being NULL for all but a handful of bsc5 rows, so the
+        # planner can't rule either branch out per row group and falls back
+        # to scanning the whole file). Splitting them lets the
+        # gaia_source_id lookup -- the overwhelmingly common case -- use the
+        # export's sort order for row-group pruning (see
+        # scripts/export_to_parquet.py's `stars` ORDER BY) instead of
+        # pulling the entire multi-hundred-MB file into memory and OOMing
+        # the Cloud Run container.
+        n = int(query)
+        cur.execute("SELECT * FROM stars WHERE gaia_source_id = ?", [n])
         rows = _rows_as_dicts(cur)
+        if not rows:
+            cur.execute("SELECT * FROM stars WHERE bsc_hr_number = ?", [n])
+            rows = _rows_as_dicts(cur)
         if rows:
             return rows[0]
 
