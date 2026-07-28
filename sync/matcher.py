@@ -79,6 +79,34 @@ GAIA_DR3_REF_EPOCH = 2016.0
 # lands on a completely different part of the sky.
 NAME_MATCH_SANITY_RADIUS_ARCSEC = 600.0
 
+# (archive_code, instrument) -> positional match radius override, arcsec.
+# Confirmed live via the name_resolved match pool (matched independent of
+# position, so not subject to EASY_MATCH_RADIUS_ARCSEC's own cutoff): these
+# instruments carry a real, persistent pointing bias well beyond 1" that
+# silently drops otherwise-good positional matches to skipped/needs_review.
+#
+# noirlab/chiron: median offset (RA, Dec) = (+12.2", -2.4") across 28k
+# name-resolved matches (2017-2023), n large enough that this is many-sigma
+# significant, not noise. Not a single fixed vector though -- ruled out
+# proper motion (corr with pmra/pmdec ~ -0.03/-0.06) and per-program causes
+# (every row shares program_id='smarts', no finer tagging). RA-offset and
+# Dec-offset are anti-correlated with each other (r=-0.62) and the median
+# RA offset grows with declination -- the signature of a real pointing-model
+# residual (this telescope's own spec page lists an equatorial mount, first
+# light 1968, permanently on one side of the pier -- a plausible source of
+# uncorrected polar-axis/non-perpendicularity terms), not per-exposure
+# randomness. Radius chosen by simulating several candidates against
+# spectroscopy_holdings' existing skipped/needs_review chiron rows -- see
+# scripts/simulate_match_radius.py -- and picking the one that maximizes
+# clean (single-candidate) recoveries before ambiguity (needs_review) takes
+# over. Confirmed live: clean recoveries rise from 8,875 at 20" to a peak of
+# 13,021 at 60", then *fall* to 11,190 at 90" as more of them pick up a
+# second nearby candidate faster than new ones appear -- 60" is the actual
+# optimum, not just "wide enough."
+INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC: dict[tuple[str, str], float] = {
+    ("noirlab", "chiron"): 60.0,
+}
+
 
 def _normalize_name(name: str) -> str:
     key = re.sub(r"\s+", "", name).upper()
@@ -175,6 +203,10 @@ def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], Sky
 
 def _to_jyear(obs_date) -> float:
     return Time(obs_date.isoformat()).jyear
+
+
+def _match_radius_arcsec(archive_code: str, instrument: str | None) -> float:
+    return INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC.get((archive_code, instrument), EASY_MATCH_RADIUS_ARCSEC)
 
 
 def _upsert_holding(
@@ -298,16 +330,21 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
     if not positional:
         return counts
 
+    # Grouped by (epoch, radius) rather than just epoch -- almost always the
+    # same as grouping by epoch alone, since every instrument shares
+    # EASY_MATCH_RADIUS_ARCSEC by default, but instruments in
+    # INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC need their own wider search
+    # both for the candidate-loading query and the final match radius.
     by_epoch = defaultdict(list)
     for r in positional:
-        by_epoch[_to_jyear(r.obs_date)].append(r)
+        by_epoch[(_to_jyear(r.obs_date), _match_radius_arcsec(archive_code, r.instrument))].append(r)
 
     with conn.cursor() as cur:
-        for epoch, recs in by_epoch.items():
+        for (epoch, radius_arcsec), recs in by_epoch.items():
             targets = SkyCoord(ra=[r.ra for r in recs] * u.deg, dec=[r.dec for r in recs] * u.deg)
 
             max_years = abs(epoch - GAIA_DR3_REF_EPOCH)
-            radius_deg = (EASY_MATCH_RADIUS_ARCSEC + MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
+            radius_deg = (radius_arcsec + MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
             candidate_rows = _load_candidate_stars(conn, [r.ra for r in recs], [r.dec for r in recs], radius_deg)
             if not candidate_rows:
                 for r in recs:
@@ -321,7 +358,7 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
             # search_around_sky's first return value indexes the *argument*
             # (propagated), the second indexes self (targets) — the reverse
             # of what the field names suggest. Verified empirically.
-            idx_cat, idx_target, sep2d, _ = targets.search_around_sky(propagated, EASY_MATCH_RADIUS_ARCSEC * u.arcsec)
+            idx_cat, idx_target, sep2d, _ = targets.search_around_sky(propagated, radius_arcsec * u.arcsec)
             candidates = defaultdict(list)
             for cat_i, target_i, sep in zip(idx_cat, idx_target, sep2d):
                 candidates[target_i].append((ids[cat_i], sep.arcsec))
