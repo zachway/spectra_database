@@ -459,7 +459,14 @@ SELECT
     count(*) AS n_records,
     list(archive_obs_id) FILTER (WHERE rn <= {TRIAGE_QUEUE_MAX_RECORDS}) AS archive_obs_ids,
     list(archive_url) FILTER (WHERE rn <= {TRIAGE_QUEUE_MAX_RECORDS}) AS archive_urls,
-    min(raw_ra) AS raw_ra, min(raw_dec) AS raw_dec,
+    -- From the single rn=1 row (most recently updated), not independent
+    -- per-column min()s -- those can pair one file's RA with a different
+    -- file's Dec, producing a synthetic position that matches no real file
+    -- (confirmed live: a noirlab group showed RA from a 2010 exposure and
+    -- Dec from an unrelated 2011 exposure, ~200 degrees apart from the
+    -- group's actual, overwhelmingly common position).
+    any_value(raw_ra) FILTER (WHERE rn = 1) AS raw_ra,
+    any_value(raw_dec) FILTER (WHERE rn = 1) AS raw_dec,
     max(updated_at) AS updated_at,
     min(obs_date) AS obs_date,
     any_value(instrument) AS instrument
