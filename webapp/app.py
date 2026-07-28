@@ -43,14 +43,16 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections import defaultdict
 from datetime import datetime, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import astropy.units as u
 import duckdb
 import numpy as np
 import paramiko
+import requests
 from astropy.coordinates import SkyCoord
 from flask import Flask, Response, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
@@ -2444,12 +2446,165 @@ ORDER BY phot_g_mean_mag ASC
 """
 
 
-def _aladin_lite_url(ra: float, dec: float) -> str:
-    return f"https://aladin.cds.unistra.fr/AladinLite/?target={ra}%20{dec}&fov=0.2"
+def _esasky_url(ra: float, dec: float) -> str:
+    return f"https://sky.esa.int/esasky/?target={ra}%20{dec}&fov=0.2&hips=DSS2+color&cooframe=J2000&sci=true&lang=en"
 
 
 def _simbad_coord_url(ra: float, dec: float) -> str:
     return f"https://simbad.cds.unistra.fr/simbad/sim-coo?Coord={ra}+{dec}&Radius=2&Radius.unit=arcmin"
+
+
+# =============================================================================
+# "View headers" on a triage record -- reads just the primary FITS header off
+# an archive_url via a bounded HTTP GET, instead of a reviewer downloading the
+# whole spectrum to see e.g. OBJECT/RA/DEC/INSTRUME/DATE-OBS. Only works when
+# archive_url actually points at a raw FITS file rather than a landing page or
+# a resolver stub that needs an extra hop (ESO, CADC DataLink, LBT's portal,
+# etc.) -- _fetch_fits_header detects that case and reports it rather than
+# guessing.
+#
+# archive_url is data this app already trusts enough to render as an outbound
+# <a href>, but here the *server* is the one making the request, off a
+# visitor-supplied query-string value -- on a public, unauthenticated Cloud
+# Run service that turns an unrestricted URL param into an SSRF proxy against
+# anything reachable from the container (notably the GCP metadata server).
+# The fix is an explicit hostname allowlist, not just a scheme check --
+# it's the exact host set observed across every archive_url in production
+# (see spectroscopy_holdings, one entry per sync/archives/*.py module), so it
+# doesn't reject any real archive link while still refusing everything else.
+_ARCHIVE_URL_ALLOWED_HOSTS = {
+    "archives.ia2.inaf.it", "caha.sdc.cab.inta-csic.es",
+    "ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca", "atlas.obs-hp.fr",
+    "archive.eso.org", "dc.g-vo.org", "datacentral.org.au",
+    "archive.gemini.edu", "gtc.sdc.cab.inta-csic.es",
+    "mercatorvo.ster.kuleuven.be", "casu.ast.cam.ac.uk",
+    "koa.ipac.caltech.edu", "www.lamost.org", "archive.lbto.org",
+    "mthamilton.ucolick.org", "mast.stsci.edu", "jvo.nao.ac.jp",
+    "astroarchive.noirlab.edu", "oirsa.cfa.harvard.edu:8080",
+    "ssda.saao.ac.za", "dr19.sdss.org", "skyserver.sdss.org",
+    "data.sdss.org",
+}
+
+_FITS_BLOCK_SIZE = 2880  # FITS header cards come in fixed 80-char x 36-card blocks
+_FITS_MAX_HEADER_BLOCKS = 128  # 368,640 bytes -- covers even HARPS-N e2ds headers (~213 KB,
+# unusually large because they carry per-order wavelength-solution coefficients as keywords),
+# confirmed against a real archives.ia2.inaf.it file, while still tiny next to the actual data
+
+
+class _HeaderUnavailable(Exception):
+    """Raised when archive_url can't be read as a bare FITS header -- not a
+    real error, just something to display to the reviewer in place of one."""
+
+
+def _is_headerable_url(url: str) -> bool:
+    """Whether a "headers" link is even worth offering for this archive_url
+    -- same allowlist _fetch_fits_header enforces server-side, checked again
+    here just so the triage page doesn't dangle a link that's guaranteed to
+    fail."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and parsed.netloc in _ARCHIVE_URL_ALLOWED_HOSTS
+
+
+def _fetch_fits_header(url: str) -> list[str]:
+    """Best-effort read of just a FITS primary header, via a single bounded
+    GET rather than downloading the whole file. Raises _HeaderUnavailable if
+    the URL isn't allowlisted, doesn't look like FITS, or the archive doesn't
+    cooperate (a landing page, a DataLink/resolver stub, an embargoed 403,
+    etc.) -- all of which are real outcomes given how differently each
+    archive's archive_url is shaped (see the module comment above).
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or parsed.netloc not in _ARCHIVE_URL_ALLOWED_HOSTS:
+        raise _HeaderUnavailable("This archive link isn't one we can read a header from directly.")
+
+    range_cap = _FITS_MAX_HEADER_BLOCKS * _FITS_BLOCK_SIZE
+    try:
+        resp = requests.get(
+            url, headers={"Range": f"bytes=0-{range_cap - 1}"},
+            stream=True, timeout=15,
+        )
+    except requests.RequestException as exc:
+        raise _HeaderUnavailable(f"Couldn't reach the archive: {exc}") from exc
+
+    with resp:
+        if resp.status_code not in (200, 206):
+            raise _HeaderUnavailable(f"Archive returned HTTP {resp.status_code}.")
+
+        cards: list[str] = []
+        buf = b""
+        gunzip = None  # set once we see a gzip magic number on the first chunk
+        try:
+            for raw_chunk in resp.iter_content(chunk_size=_FITS_BLOCK_SIZE):
+                if gunzip is None and raw_chunk[:2] == b"\x1f\x8b":
+                    # Some archives (e.g. LAMOST) serve .fits as a gzip
+                    # stream and ignore the Range header entirely -- inflate
+                    # on the fly rather than treating the compressed bytes
+                    # as if they were the FITS header themselves.
+                    gunzip = zlib.decompressobj(wbits=zlib.MAX_WBITS | 16)
+                chunk = gunzip.decompress(raw_chunk) if gunzip is not None else raw_chunk
+                buf += chunk
+                while len(buf) >= _FITS_BLOCK_SIZE:
+                    block, buf = buf[:_FITS_BLOCK_SIZE], buf[_FITS_BLOCK_SIZE:]
+                    if not cards and block[:6] not in (b"SIMPLE", b"XTENSI"):
+                        raise _HeaderUnavailable(
+                            "This doesn't look like a FITS file -- the link is probably "
+                            "a landing page or resolver rather than the spectrum itself."
+                        )
+                    for i in range(0, _FITS_BLOCK_SIZE, 80):
+                        card = block[i:i + 80].decode("ascii", errors="replace").rstrip()
+                        cards.append(card)
+                        if card == "END":
+                            return cards
+                if len(buf) + len(cards) * 80 > range_cap:
+                    break
+        except requests.RequestException as exc:
+            raise _HeaderUnavailable(f"Connection dropped while reading: {exc}") from exc
+
+    raise _HeaderUnavailable(
+        "Didn't find the header's END card within the first "
+        f"{range_cap // 1024} KB -- giving up rather than downloading further."
+    )
+
+
+TRIAGE_HEADER_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Spectra Database — FITS header</title>
+  <style>""" + SHARED_STYLE + """
+    pre.fits-header { background: #f4f4f4; padding: 0.8rem; overflow-x: auto; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <h1>Spectra Database</h1>
+  <h2>FITS header</h2>
+  <p class="note">Read directly from <a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a>
+    via a bounded range request -- the file itself was never downloaded.</p>
+  {% if error %}
+    <p class="error">Couldn't read a header: {{ error }}</p>
+  {% else %}
+    <pre class="fits-header">{% for card in cards %}{{ card }}
+{% endfor %}</pre>
+  {% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/triage/header")
+def triage_header():
+    url = request.args.get("url", "")
+    try:
+        cards = _fetch_fits_header(url)
+        error = None
+    except _HeaderUnavailable as exc:
+        cards = []
+        error = str(exc)
+    return render_template_string(TRIAGE_HEADER_TEMPLATE, url=url, cards=cards, error=error)
 
 
 TRIAGE_TEMPLATE = """
@@ -2467,7 +2622,9 @@ TRIAGE_TEMPLATE = """
     .prior-submissions { font-style: italic; }
     .cone-result { display: block; margin: 0.2rem 0 0.2rem 1.4rem; }
     .record-list { font-size: 0.9rem; }
-    .record-list a { margin-right: 0.8rem; }
+    .record-entry { margin-right: 0.8rem; white-space: nowrap; }
+    .record-entry a { margin-right: 0.3rem; }
+    .header-link { font-size: 0.85em; color: #555; }
     .mood-image { float: right; max-width: 140px; margin: 0 0 0.5rem 1rem; }
     .triage-progress { display: flex; justify-content: space-between; align-items: baseline; }
     .skip-link { white-space: nowrap; margin-left: 1rem; }
@@ -2535,13 +2692,13 @@ TRIAGE_TEMPLATE = """
 
     <details class="record-list">
       <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name</summary>
-      {% for oid, url in r.records %}<a href="{{ url }}" target="_blank" rel="noopener">{{ oid }}</a>{% endfor %}
+      {% for rec in r.records %}<span class="record-entry"><a href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.oid }}</a>{% if rec.header_url %} <a href="{{ rec.header_url }}" target="_blank" rel="noopener" class="header-link">headers</a>{% endif %}</span>{% endfor %}
       {% if r.records_truncated %}<span class="note">…and more (showing first {{ r.records|length }})</span>{% endif %}
     </details>
 
-    {% if r.aladin_url %}
+    {% if r.sky_finder_url %}
     <p class="finder-links">
-      <a href="{{ r.aladin_url }}" target="_blank" rel="noopener">Aladin Lite finder chart</a>
+      <a href="{{ r.sky_finder_url }}" target="_blank" rel="noopener">ESASky finder chart</a>
       <a href="{{ r.simbad_url }}" target="_blank" rel="noopener">SIMBAD at this position</a>
     </p>
     {% endif %}
@@ -2580,9 +2737,9 @@ TRIAGE_TEMPLATE = """
       </label>
 
       <label>
-        <input type="radio" name="outcome" value="confirmed_absent_from_gaia" {% if not r.aladin_url %}disabled{% endif %}>
+        <input type="radio" name="outcome" value="confirmed_absent_from_gaia" {% if not r.sky_finder_url %}disabled{% endif %}>
         Confirmed — real star, no Gaia DR3 source found nearby (and not a known bright star)
-        {% if r.aladin_url %}
+        {% if r.sky_finder_url %}
           (<a href="{{ r.cone_search_url }}">run live {{ '%g'|format(triage_cone_search_radius) }}&Prime; Gaia cone search to confirm</a>)
         {% endif %}
       </label>
@@ -2761,7 +2918,17 @@ def triage():
 
     rows = ordered[offset:offset + 1]
     for r in rows:
-        r["records"] = list(zip(r["archive_obs_ids"] or [], r["archive_urls"] or []))
+        r["records"] = [
+            {
+                "oid": oid,
+                "url": url,
+                "header_url": (
+                    "/triage/header?" + urlencode({"url": url})
+                    if _is_headerable_url(url) else None
+                ),
+            }
+            for oid, url in zip(r["archive_obs_ids"] or [], r["archive_urls"] or [])
+        ]
         r["records_truncated"] = r["n_records"] > len(r["records"])
 
     # Cone-search preview, if the contributor just clicked "run live cone
@@ -2774,7 +2941,7 @@ def triage():
         key = (r["archive_code"], r["group_key"])
         r["prior_submissions"] = submissions_by_group.get(key, [])
         if r["raw_ra"] is not None and r["raw_dec"] is not None:
-            r["aladin_url"] = _aladin_lite_url(r["raw_ra"], r["raw_dec"])
+            r["sky_finder_url"] = _esasky_url(r["raw_ra"], r["raw_dec"])
             r["simbad_url"] = _simbad_coord_url(r["raw_ra"], r["raw_dec"])
             r["cone_search_url"] = "/triage/cone_search?" + urlencode({
                 "archive_code": r["archive_code"],
@@ -2785,7 +2952,7 @@ def triage():
             })
             r["cone_search_result"] = preview_result if key == preview_key else None
         else:
-            r["aladin_url"] = None
+            r["sky_finder_url"] = None
             r["cone_search_result"] = None
 
     resp = Response(render_template_string(
