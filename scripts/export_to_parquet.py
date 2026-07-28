@@ -688,6 +688,20 @@ def export_tables(database_url: str, out_dir: str) -> None:
                 # Exporting pre-sorted by star_id lets row-group pruning
                 # actually work for that query, independent of table size.
                 select_sql += " ORDER BY star_id"
+            elif table == "stars":
+                # Same class of bug as spectroscopy_holdings above, just
+                # discovered later: _lookup_local_star's numeric-query path
+                # filters this table on gaia_source_id over httpfs.
+                # Confirmed live -- an unsorted export of this (now >650MB)
+                # table meant every row group's gaia_source_id min/max
+                # spanned nearly the whole 0..~6.9e18 range, so row-group
+                # pruning couldn't skip anything and a single-ID search
+                # pulled the whole file into memory, OOM-killing the Cloud
+                # Run container. Sorting by gaia_source_id fixes pruning for
+                # that lookup; NULLs (bsc5 stars with no Gaia source) sort
+                # together at the end instead of scattering across every
+                # row group.
+                select_sql += " ORDER BY gaia_source_id"
             _atomic_copy(con, select_sql, path)
             logger.info("exported %s -> %s", table, path)
 
