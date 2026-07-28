@@ -185,7 +185,15 @@ def _group_holdings(holdings: list[dict]) -> list[dict]:
     for h in holdings:
         key = (h["display_name"], h["instrument"])
         if key not in groups:
-            groups[key] = {"display_name": h["display_name"], "instrument": h["instrument"], "observations": []}
+            groups[key] = {
+                "display_name": h["display_name"],
+                "instrument": h["instrument"],
+                # Same hand-maintained lookup the Instruments tab uses --
+                # see INSTRUMENT_RESOLVING_POWER's own comment for why it's
+                # keyed by (archive, instrument) rather than instrument alone.
+                "resolving_power": INSTRUMENT_RESOLVING_POWER.get(key, "—"),
+                "observations": [],
+            }
             order.append(key)
         groups[key]["observations"].append(h)
     return [groups[k] for k in order]
@@ -408,7 +416,7 @@ PAGE_TEMPLATE = """
       <p><a href="?q={{ star_search_id }}&amp;format=csv">Download holdings as CSV</a></p>
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
-        <summary>{{ g.display_name }} — {{ g.instrument or "—" }} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
+        <summary>{{ g.display_name }} — {{ g.instrument or "—" }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
         <table>
           <tr><th>Date</th><th>Match</th><th>Method</th><th>Link</th></tr>
           {% for h in g.observations %}
