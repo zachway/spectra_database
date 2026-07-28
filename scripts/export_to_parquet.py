@@ -448,7 +448,16 @@ WITH ranked AS (
                PARTITION BY h.archive_code,
                             COALESCE(NULLIF(TRIM(h.raw_target_name), ''), 'obs:' || h.archive_obs_id)
                ORDER BY h.updated_at DESC
-           ) AS rn
+           ) AS rn,
+           -- Unit-vector components of (raw_ra, raw_dec), summed per group
+           -- below to measure how tightly clustered a group's positions
+           -- actually are. Avoids the wraparound (RA 359 vs RA 1) and pole
+           -- (dec near +/-90) false positives a naive max()-min() on ra/dec
+           -- would have. NULL automatically when either coordinate is NULL,
+           -- so these just drop out of the sum()/count() below.
+           cos(radians(h.raw_dec)) * cos(radians(h.raw_ra)) AS vx,
+           cos(radians(h.raw_dec)) * sin(radians(h.raw_ra)) AS vy,
+           sin(radians(h.raw_dec)) AS vz
     FROM pg.spectroscopy_holdings h
     JOIN pg.archives a ON a.archive_code = h.archive_code
     WHERE h.match_status = 'skipped'
@@ -467,6 +476,17 @@ SELECT
     -- group's actual, overwhelmingly common position).
     any_value(raw_ra) FILTER (WHERE rn = 1) AS raw_ra,
     any_value(raw_dec) FILTER (WHERE rn = 1) AS raw_dec,
+    -- Angular deviation (degrees) of the group's reported positions from
+    -- their mean direction -- 0 means every record with a position agrees,
+    -- larger means this "one name" actually covers records at genuinely
+    -- different places on the sky (webapp.app warns on this so a reviewer
+    -- doesn't trust the single raw_ra/raw_dec above as if it speaks for the
+    -- whole group). NULL when fewer than 2 records report a position.
+    CASE WHEN count(vx) >= 2 THEN
+        degrees(acos(least(1.0, greatest(0.0,
+            sqrt(sum(vx) * sum(vx) + sum(vy) * sum(vy) + sum(vz) * sum(vz)) / count(vx)
+        ))))
+    END AS position_spread_deg,
     max(updated_at) AS updated_at,
     min(obs_date) AS obs_date,
     any_value(instrument) AS instrument
