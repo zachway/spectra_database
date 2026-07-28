@@ -103,8 +103,31 @@ NAME_MATCH_SANITY_RADIUS_ARCSEC = 600.0
 # 13,021 at 60", then *fall* to 11,190 at 90" as more of them pick up a
 # second nearby candidate faster than new ones appear -- 60" is the actual
 # optimum, not just "wide enough."
+#
+# eso/FEROS: median offset (RA, Dec) = (-59.6", +23.5") across 48k
+# name-resolved matches (2003-2026), tightly clustered (90th-percentile
+# separation only 99" vs. a 75" median -- most of the mass sits in a narrow
+# band, unlike a random-mismatch tail). Ruled out proper motion and epoch
+# drift the same way as chiron (both correlations ~0). Simulated the same
+# way: clean recoveries peak at 100" (20,635, essentially flat 95-105")
+# before ambiguity takes over past ~120" -- matches the 99" p90 almost
+# exactly, so 100" captures the real offset population without yet
+# overreaching into denser fields.
+#
+# Investigated and explicitly NOT added: gemini/NIFS has an even tighter,
+# more persistent offset (median separation 180", 90th percentile only
+# 187" -- essentially a fixed vector, stable 2005-2024) most likely because
+# NIFS's tiny IFU sits off the acquisition camera's optical axis on the
+# focal plane, and Gemini's alt-az mount rotates that fixed instrumental
+# offset's RA/Dec projection with parallactic angle. But NIFS targets sit
+# in far more crowded fields: simulated clean recoveries peak at just 80"
+# (4,961) and are already declining by 100" -- by the radius needed to
+# actually reach the real ~180" offset, ambiguous matches (11,929) outnumber
+# clean ones (2,191) more than 5:1. Unlike chiron/FEROS, widening the radius
+# here would create far more false ambiguity than it resolves.
 INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC: dict[tuple[str, str], float] = {
     ("noirlab", "chiron"): 60.0,
+    ("eso", "FEROS"): 100.0,
 }
 
 

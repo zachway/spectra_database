@@ -383,6 +383,36 @@ def test_instrument_radius_override_recovers_offset_beyond_default_radius(conn):
     assert status == "matched"
 
 
+def test_instrument_radius_override_recovers_offset_for_eso_feros(conn):
+    """eso/FEROS carries its own confirmed pointing offset (see
+    INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC's docstring) -- distinct
+    magnitude and direction from chiron's, but the same override mechanism
+    keyed on (archive_code, instrument) must apply to it too.
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000092, 140.0, -35.0)
+    conn.commit()
+
+    assert matcher.INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC[("eso", "FEROS")] > 30.0
+    ra, dec = _offset(140.0, -35.0, 200.0, 80.0)  # well outside 1", inside the FEROS override
+    rec = RawObservation(
+        archive_obs_id="feros-1", archive_url="http://example.test/feros1",
+        instrument="FEROS", ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+    )
+    counts = matcher.match_records(conn, "eso", [rec])
+    assert counts["positional_matched"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT s.gaia_source_id, h.match_status FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='eso' AND h.archive_obs_id='feros-1'"
+        )
+        gaia_id, status = cur.fetchone()
+    assert gaia_id == 900000000000000092
+    assert status == "matched"
+
+
 def test_instrument_radius_override_does_not_apply_to_other_instruments(conn):
     """The same 30" offset on a plain noirlab instrument (not chiron) must
     stay outside EASY_MATCH_RADIUS_ARCSEC and skip, same as any other
