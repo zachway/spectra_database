@@ -1,6 +1,15 @@
-"""SDSS Legacy Optical (BOSS/eBOSS, pre-SDSS-V) — DR19 bulk "allspec" catalog.
+"""SDSS Legacy Optical (BOSS/eBOSS, pre-SDSS-V) — DR20 bulk "allspec" catalog.
 
-https://data.sdss.org/sas/dr19/spectro/allspec/1.0.1/allspec-dr19-1.0.1.fits.gz
+https://data.sdss.org/sas/dr20/spectro/allspec/1.0.2/allspec-dr20-1.0.2.fits.gz
+
+DR20 update (2026-07-31): file grew from DR19's 812MB/14.6M rows to
+1.44GB/27.7M rows (new SDSS-V FPS-era data), live-verified via a partial
+range-fetch of the gzip header to still expose the same column set this
+module reads (instrument/mjd/specobjid/run2d/ra/dec/cas_url, same names).
+The legacy subset this module actually extracts (instrument='boss', mjd in
+[FIRST_MJD, LEGACY_MJD_CUTOFF)) is historical and out of SDSS-V's FPS-era
+reduction path, so it isn't expected to change release over release --
+just re-point the URL and let the module re-derive its cache fresh.
 
 First cut of this used SkyServer's SqlSearch REST API, paginated 50,000 rows
 at a time by an mjd watermark — confirmed live to work for 18 consecutive
@@ -77,7 +86,7 @@ from astropy.time import Time
 
 from sync.base import RawObservation, clean_float
 
-ALLSPEC_URL = "https://data.sdss.org/sas/dr19/spectro/allspec/1.0.1/allspec-dr19-1.0.1.fits.gz"
+ALLSPEC_URL = "https://data.sdss.org/sas/dr20/spectro/allspec/1.0.2/allspec-dr20-1.0.2.fits.gz"
 
 LEGACY_MJD_CUTOFF = 58932  # first SDSS-V (FPS/robot-era) rows start after this
 FIRST_MJD = 55176  # live-confirmed: MIN(mjd) among instrument='boss' legacy rows
@@ -87,7 +96,7 @@ WINDOW_DAYS = 7
 # Not under public_html (morgan and joy share that NFS home, and Apache
 # serves it publicly) -- this is scratch space, not something to publish.
 CACHE_DIR = os.environ.get("SDSS_LEGACY_OPTICAL_CACHE_DIR", os.path.expanduser("~/.cache/spectra_database"))
-RAW_FITS_PATH = os.path.join(CACHE_DIR, "sdss_allspec_dr19.fits")  # transient -- deleted after distilling
+RAW_FITS_PATH = os.path.join(CACHE_DIR, "sdss_allspec_dr20.fits")  # transient -- deleted after distilling
 LEGACY_CACHE_PATH = os.path.join(CACHE_DIR, "sdss_legacy_boss.parquet")  # what fetch() actually reads
 
 

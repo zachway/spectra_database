@@ -69,8 +69,6 @@ CREATE TABLE archives (
     access_mechanism        TEXT,               -- 'tap' | 'rest_json' | 'bulk_file' | 'cas_sql' | ...
     has_native_gaia_column  BOOLEAN NOT NULL DEFAULT FALSE,
     -- Which Gaia data release the archive's own source_id column is expressed in, if known.
-    -- SDSS-V's bulk spAll GAIA_ID is 'dr2' today; expected to become 'dr3' when DR20 ships
-    -- (~Aug 2026) — recheck and update this row when that happens.
     native_gaia_dr           TEXT,
     notes                    TEXT,
     added_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -146,7 +144,7 @@ INSERT INTO archives (archive_code, display_name, access_mechanism, has_native_g
     ('galah',                'GALAH',                            'tap',       TRUE,  'dr3', 'Implemented — galah_dr4.mainspectable.gaiadr3_source_id, 100% populated.'),
     ('desi',                 'DESI',                             'bulk_file', TRUE,  'dr3', 'Implemented directly against the MWS VAC file (data.desi.lbl.gov) via HTTP range-request streaming — does NOT depend on NOIRLab Data Lab as originally assumed.'),
     ('sdss_v_apogee',        'SDSS-V — APOGEE',                  'cas_sql',   TRUE,  'dr3', 'Implemented — apogeeStar.gaiaedr3_source_id; near-IR, cumulative across SDSS generations.'),
-    ('sdss_v_optical',       'SDSS-V — Optical',                 'bulk_file', TRUE,  'dr2', 'Implemented directly against the bulk spAll-lite file (612MB gzip) — GAIA_ID 100% populated for CLASS=STAR, including live-confirmed FPS-era rows. Public docs say DR2; internally already DR3, DR20 (~Aug 2026) expected to make that public — recheck then.'),
+    ('sdss_v_optical',       'SDSS-V — Optical',                 'bulk_file', TRUE,  'dr3', 'Implemented directly against the bulk spAll-lite file (now DR20, ~2.5GB gzip) — GAIA_ID 100% populated for CLASS=STAR in the DR19 sample, including live-confirmed FPS-era rows. DR20 (shipped 2026-07-31) confirmed live via the FITS header that GAIA_ID switched from Gaia DR2 to DR3 source_id, as expected.'),
     ('sdss_legacy_optical',  'SDSS Legacy Optical',              'cas_sql',   FALSE, NULL, 'Implemented — no Gaia column, positional match via specObj ra/dec, capped at MJD 58932.'),
     ('lamost',               'LAMOST',                           'sql_api',   TRUE,  'dr3', 'Implemented via an undocumented SQL API (www.lamost.org/dr11/v2.0/sql/q) — catalogue.gaia_source_id 100% populated for CLASS=STAR. Covers LRS only; MRS is the separate lamost_mrs archive_code.'),
     ('lamost_mrs',           'LAMOST — MRS',                     'sql_api',   TRUE,  'dr3', 'Same undocumented SQL API as lamost, different table (med_combined, the per-target combined-spectrum table behind the "Medium Resolution Catalogue Query" web form — not one of the SQL page''s own documented table names). No CLASS column exists for MRS at all (it''s stars-only by design). obsid is not unique in med_combined (multiple exposures/bands/epochs per target, each its own mobsid) but SELECT DISTINCT on the obsid-level columns collapses that cleanly server-side — confirmed live, ~1000 rows/sec. Deep link (medspectrum/fits/{obsid}) found by brute-force probing since MRS has no lrs_spectrum.js-style readable download link to read the pattern from — see sync/archives/lamost_mrs.py.'),
