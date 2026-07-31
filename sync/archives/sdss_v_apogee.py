@@ -12,7 +12,7 @@ import requests
 
 from sync.base import RawObservation
 
-SQL_URL = "https://skyserver.sdss.org/dr19/SkyServerWS/SearchTools/SqlSearch"
+SQL_URL = "https://skyserver.sdss.org/dr20/SkyServerWS/SearchTools/SqlSearch"
 
 QUERY = """
 SELECT TOP {page_size} apogee_id, telescope, field, [file], gaiaedr3_source_id
@@ -23,9 +23,9 @@ ORDER BY apogee_id ASC
 
 PAGE_SIZE = 50000
 
-# Confirmed live: dr17 is the reduction pipeline version, independent of the
-# DR19 data-release path it's served under.
-SPECTRUM_URL = "https://data.sdss.org/sas/dr19/spectro/apogee/redux/dr17/stars/{telescope}/{field}/{file}"
+# Confirmed live against DR20: dr17 is still the reduction pipeline version,
+# independent of the DR19/DR20 data-release path it's served under.
+SPECTRUM_URL = "https://data.sdss.org/sas/dr20/spectro/apogee/redux/dr17/stars/{telescope}/{field}/{file}"
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:

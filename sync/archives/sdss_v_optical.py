@@ -1,33 +1,40 @@
 """SDSS-V Optical (BOSS, current era) — bulk spAll-lite FITS file.
 
-https://data.sdss.org/sas/dr19/spectro/boss/redux/v6_1_3/spAll-lite-v6_1_3.fits.gz
+https://data.sdss.org/sas/dr20/spectro/boss/redux/v6_2_1/summary/daily/spAll-lite-v6_2_1.fits.gz
 
-Turned out downloadable after all — 612MB gzip-compressed (unlike the DESI
-MWS VAC file, gzip isn't seekable, so unlike desi.py this can't use HTTP
-Range windows; the whole file has to be fetched and decompressed to read
-any of it). Live-verified: the SPALL table's GAIA_ID column is a first-party
-Gaia join, 100% populated among CLASS='STAR' rows (923,306 / 923,306 in the
-v6_1_3 sample pulled here) — the earlier CAS SQL-only investigation just
-hadn't found the bulk file's column exposed anywhere queryable.
+Turned out downloadable after all — DR20 ships this as ~2.5GB gzip-compressed
+(unlike the DESI MWS VAC file, gzip isn't seekable, so unlike desi.py this
+can't use HTTP Range windows; the whole file has to be fetched and
+decompressed to read any of it). Live-verified: the SPALL table's GAIA_ID
+column is a first-party Gaia join, 100% populated among CLASS='STAR' rows in
+the DR19 v6_1_3 sample pulled here — the earlier CAS SQL-only investigation
+just hadn't found the bulk file's column exposed anywhere queryable.
 
-First cut of this re-downloaded the full 612MB on every fetch() call (into
+First cut of this re-downloaded the full file on every fetch() call (into
 a tempfile.TemporaryDirectory() that deletes itself when the call returns)
 -- since this archive isn't paginated (one fetch() returns every new row in
 a single pass, so sync.main only calls it twice per run: once to get
 everything new, once to confirm zero), that meant downloading the whole
 file twice per sync run. Caches it in a persistent local path instead, so
 the second (confirming, always-empty) call is a local re-read rather than
-another 612MB fetch. The cache is deleted once that empty confirmation
+another multi-GB fetch. The cache is deleted once that empty confirmation
 happens, so it's temporary scratch space, not a permanent fixture -- same
 pattern as desi.py's row-window cache.
 
-DR2/DR3 caveat unresolved by this: a handful of sampled GAIA_IDs matched
-both gaiadr2.gaia_source and gaiadr3.gaia_source with consistent positions,
-which doesn't distinguish which release GAIA_ID is actually drawn from
-(most stars keep the same source_id across releases; only crowded-field/
-binary cases get reassigned, so a clean sample proves nothing either way).
-Public docs still say DR2 — see the sdss-gaia-id-dr20-transition project
-memory. Treat as DR2 until DR20 ships (~Aug 2026) confirms the switch.
+DR20 (live-verified 2026-07-31 against the real FITS header, TTYPE36
+comment): GAIA_ID has switched from "Gaia DR2 SourceID" to "Gaia DR3
+SourceID" as expected -- see the sdss-gaia-id-dr20-transition project
+memory. No reconciliation needed for rows pulled via this DR20 URL.
+
+DR20 also reorganized the reduction pipeline layout, both live-verified:
+reduction version is v6_2_1 (was v6_1_3 for DR19), and the summary/spectra
+trees now split into daily/epoch/allepoch flavors -- "daily" (used here) is
+the one-row-per-visit flavor matching this project's per-observation model
+(the other two are coadds, like apStar, with no single obs_date). The
+per-observation spectrum path also gained a field-prefix grouping directory
+level not present in DR19 (e.g. field 015002 lives under 015XXX/015002/...,
+grouping by the field number's first 3 of 6 zero-padded digits) -- computed
+in fetch() below.
 
 SPEC_FILE gives the exact per-observation filename directly (no need to
 reconstruct it) — confirmed live against the real SAS directory listing.
@@ -42,9 +49,12 @@ from astropy.time import Time
 
 from sync.base import RawObservation
 
-SPALL_URL = "https://data.sdss.org/sas/dr19/spectro/boss/redux/v6_1_3/spAll-lite-v6_1_3.fits.gz"
+SPALL_URL = "https://data.sdss.org/sas/dr20/spectro/boss/redux/v6_2_1/summary/daily/spAll-lite-v6_2_1.fits.gz"
 
-SPECTRUM_URL = "https://data.sdss.org/sas/dr19/spectro/boss/redux/v6_1_3/spectra/lite/{field:06d}/{mjd}/{spec_file}"
+SPECTRUM_URL = (
+    "https://data.sdss.org/sas/dr20/spectro/boss/redux/v6_2_1/spectra/daily/lite/"
+    "{field_group}XXX/{field:06d}/{mjd}/{spec_file}"
+)
 
 # Not under public_html (morgan and joy share that NFS home, and Apache
 # serves it publicly) -- this is scratch space, not something to publish.
@@ -84,11 +94,12 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         mjd = int(row["MJD"])
         max_mjd = max(max_mjd, mjd)
         field = int(row["FIELD"])
+        field_group = f"{field:06d}"[:3]
         spec_file = row["SPEC_FILE"].strip()
         records.append(
             RawObservation(
                 archive_obs_id=row["SPECOBJID"].strip(),
-                archive_url=SPECTRUM_URL.format(field=field, mjd=mjd, spec_file=spec_file),
+                archive_url=SPECTRUM_URL.format(field_group=field_group, field=field, mjd=mjd, spec_file=spec_file),
                 instrument="SDSS-V/BOSS",
                 obs_date=Time(mjd, format="mjd").to_datetime().date(),
                 program_id=row["SURVEY"].strip(),
@@ -97,8 +108,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         )
 
     if not records:
-        # Caught up -- drop the cache rather than let a 612MB scratch file
-        # sit around indefinitely. A future SDSS-V reduction just
+        # Caught up -- drop the cache rather than let a multi-GB scratch
+        # file sit around indefinitely. A future SDSS-V reduction just
         # re-downloads fresh on its first call.
         if os.path.exists(SPALL_CACHE_PATH):
             os.remove(SPALL_CACHE_PATH)
