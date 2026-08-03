@@ -33,6 +33,7 @@ import psycopg
 
 from sync.archives import (
     asiago,
+    bess,
     carmenes,
     carmenes_caha,
     cfht_cadc,
@@ -107,6 +108,7 @@ ARCHIVES = {
     "oirsa": oirsa.fetch,
     "gtc": gtc.fetch,
     "hermes_mercator": hermes_mercator.fetch,
+    "bess": bess.fetch,
 }
 
 
