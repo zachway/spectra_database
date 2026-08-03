@@ -13,12 +13,12 @@ value into NaN and crash the matcher's KD-tree build outright.
 
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service, reduction_status_from_calib_level
 
 TAP_URL = "http://archive.eso.org/tap_obs"
 
 QUERY = """
-SELECT TOP {page_size} dp_id, s_ra, s_dec, t_min, instrument_name, target_name, proposal_id
+SELECT TOP {page_size} dp_id, s_ra, s_dec, t_min, instrument_name, target_name, proposal_id, calib_level
 FROM ivoa.ObsCore
 WHERE dataproduct_type='spectrum' AND obs_collection != ''
 AND t_min > {last_t_min}
@@ -57,6 +57,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ra=clean_float(row["s_ra"]),
                 dec=clean_float(row["s_dec"]),
                 raw_target_name=str(row["target_name"]),
+                reduction_status=reduction_status_from_calib_level(row["calib_level"]),
             )
         )
 

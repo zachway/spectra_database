@@ -137,6 +137,11 @@ def fetch_reduced(
                 obs_date=obs_date,
                 program_id=r.get("observation_id") or r.get("data_label"),
                 raw_target_name=r.get("object"),
+                # `rows` above is already filtered to is_reduced(filename)
+                # only -- every record built here is a reduced product by
+                # construction, unlike the raw-only CADC ObsCore path both
+                # callers' docstrings describe this module as a workaround for.
+                reduction_status="reduced",
             )
         )
 

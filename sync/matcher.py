@@ -246,10 +246,11 @@ def _upsert_holding(
         INSERT INTO spectroscopy_holdings
             (star_id, archive_code, archive_obs_id, archive_url, instrument,
              obs_date, program_id, match_method, match_status, theta_arcsec,
-             raw_target_name, raw_ra, raw_dec, updated_at)
+             raw_target_name, raw_ra, raw_dec, reduction_status, updated_at)
         VALUES (%(star_id)s, %(archive_code)s, %(archive_obs_id)s, %(archive_url)s,
                 %(instrument)s, %(obs_date)s, %(program_id)s, %(match_method)s, %(match_status)s,
-                %(theta_arcsec)s, %(raw_target_name)s, %(raw_ra)s, %(raw_dec)s, now())
+                %(theta_arcsec)s, %(raw_target_name)s, %(raw_ra)s, %(raw_dec)s,
+                %(reduction_status)s, now())
         ON CONFLICT (archive_code, archive_obs_id) DO UPDATE SET
             star_id = EXCLUDED.star_id,
             archive_url = EXCLUDED.archive_url,
@@ -262,6 +263,7 @@ def _upsert_holding(
             raw_target_name = EXCLUDED.raw_target_name,
             raw_ra = EXCLUDED.raw_ra,
             raw_dec = EXCLUDED.raw_dec,
+            reduction_status = EXCLUDED.reduction_status,
             updated_at = now()
         """,
         {
@@ -278,6 +280,7 @@ def _upsert_holding(
             "raw_target_name": rec.raw_target_name,
             "raw_ra": rec.ra,
             "raw_dec": rec.dec,
+            "reduction_status": rec.reduction_status or "unknown",
         },
     )
 

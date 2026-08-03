@@ -25,12 +25,12 @@ from urllib.parse import quote
 
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service, reduction_status_from_calib_level
 
 TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus"
 
 QUERY = """
-SELECT TOP {page_size} obs_publisher_did, s_ra, s_dec, t_min, instrument_name, target_name
+SELECT TOP {page_size} obs_publisher_did, s_ra, s_dec, t_min, instrument_name, target_name, calib_level
 FROM ivoa.ObsCore
 WHERE obs_collection = 'DAO' AND dataproduct_type = 'spectrum' AND t_min > {last_t_min}
 ORDER BY t_min ASC
@@ -64,6 +64,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ra=clean_float(row["s_ra"]),
                 dec=clean_float(row["s_dec"]),
                 raw_target_name=str(row["target_name"]),
+                reduction_status=reduction_status_from_calib_level(row["calib_level"]),
             )
         )
 

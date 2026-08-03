@@ -39,16 +39,22 @@ t_min confirmed live to have zero NULLs across the whole table, but read via
 clean_float anyway for consistency with every other ObsCore-based module
 here (masked values are a live-confirmed real pattern elsewhere, e.g.
 mast.py) rather than assuming this holds forever.
+
+calib_level is uniformly 1 across all four instruments (confirmed live,
+2026-08-03: FAST/Hectospec/Hectochelle/Echelle all grouped as calib_level=1,
+no other value present) -- reduction_status_from_calib_level maps this to
+'raw' for every OIRSA row, unlike the other ObsCore archives here where it
+varies by row.
 """
 
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service, reduction_status_from_calib_level
 
 TAP_URL = "http://oirsa.cfa.harvard.edu:8080/tap"
 
 QUERY = """
-SELECT TOP {page_size} obs_publisher_did, s_ra, s_dec, t_min, instrument_name, target_name, access_url
+SELECT TOP {page_size} obs_publisher_did, s_ra, s_dec, t_min, instrument_name, target_name, access_url, calib_level
 FROM ivoa.obscore
 WHERE dataproduct_type = 'spectrum' AND t_min > {last_t_min}
 ORDER BY t_min ASC
@@ -79,6 +85,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ra=clean_float(row["s_ra"]),
                 dec=clean_float(row["s_dec"]),
                 raw_target_name=str(row["target_name"]),
+                reduction_status=reduction_status_from_calib_level(row["calib_level"]),
             )
         )
 

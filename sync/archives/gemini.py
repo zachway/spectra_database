@@ -41,7 +41,7 @@ from urllib.parse import quote
 
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service, reduction_status_from_calib_level
 
 TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus"
 
@@ -49,7 +49,7 @@ WINDOW_DAYS = 7
 FIRST_REAL_T_MIN = 51946.0  # live-confirmed: MIN(t_min) WHERE t_min > 0
 
 QUERY = """
-SELECT obs_publisher_did, s_ra, s_dec, t_min, instrument_name, target_name
+SELECT obs_publisher_did, s_ra, s_dec, t_min, instrument_name, target_name, calib_level
 FROM ivoa.ObsCore
 WHERE obs_collection IN ('GEMINI', 'GEMINICADC') AND dataproduct_type = 'spectrum'
 AND t_min >= {window_start} AND t_min < {window_end}
@@ -84,6 +84,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ra=clean_float(row["s_ra"]),
                 dec=clean_float(row["s_dec"]),
                 raw_target_name=str(row["target_name"]),
+                reduction_status=reduction_status_from_calib_level(row["calib_level"]),
             )
         )
 
