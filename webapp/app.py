@@ -70,7 +70,7 @@ MAX_NAME_LOOKUPS = 2000
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
     "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
-    "sky_sample", "triage_queue",
+    "sky_sample", "triage_queue", "star_name_index",
     "archive_overlap", "archive_overlap_triple", "instrument_overlap", "instrument_overlap_triple",
 )
 
@@ -626,12 +626,6 @@ def _normalize_star_name(s: str) -> str:
     return re.sub(r"\s+", " ", _NAME_PREFIX_RE.sub("", s.strip())).lower()
 
 
-# Same normalization applied DB-side to input_name/name_aliases, so a
-# lookup can compare against an already-normalized query parameter instead
-# of re-deriving it per row.
-_NORMALIZE_SQL = r"lower(regexp_replace(regexp_replace(trim({col}), '^(NAME|\*)\s+', '', 'i'), '\s+', ' ', 'g'))"
-
-
 def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | None:
     """Match `query` against a star already tracked locally -- by
     gaia_source_id/bsc_hr_number for a numeric query, or by any cached name
@@ -666,19 +660,29 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
         if rows:
             return rows[0]
 
+    # Goes through star_name_index (a precomputed normalized-name ->
+    # identifier table, see scripts/export_to_parquet.py's
+    # STAR_NAME_INDEX_QUERY) rather than filtering `stars` directly on
+    # normalize(input_name)/name_aliases -- confirmed live that wrapping the
+    # filtered columns in a function defeats Parquet's row-group pruning
+    # entirely, so *every* name search (i.e. nearly every real query) pulled
+    # nearly the entire multi-hundred-MB stars.parquet over HTTP. The index
+    # is small enough that a full scan of it is cheap regardless of
+    # pruning; this just resolves the name to an identifier, then reuses
+    # the numeric branch's already-pruning-friendly lookup above.
     normalized_query = _normalize_star_name(query)
     cur.execute(
-        f"""
-        SELECT * FROM stars
-        WHERE {_NORMALIZE_SQL.format(col="input_name")} = ?
-           OR list_contains(
-                list_transform(COALESCE(name_aliases, []), x -> {_NORMALIZE_SQL.format(col="x")}),
-                ?
-              )
-        LIMIT 1
-        """,
-        [normalized_query, normalized_query],
+        "SELECT gaia_source_id, bsc_hr_number FROM star_name_index WHERE normalized_name = ? LIMIT 1",
+        [normalized_query],
     )
+    idx_row = cur.fetchone()
+    if idx_row is None:
+        return None
+    gaia_source_id, bsc_hr_number = idx_row
+    if gaia_source_id is not None:
+        cur.execute("SELECT * FROM stars WHERE gaia_source_id = ?", [gaia_source_id])
+    else:
+        cur.execute("SELECT * FROM stars WHERE bsc_hr_number = ?", [bsc_hr_number])
     rows = _rows_as_dicts(cur)
     return rows[0] if rows else None
 
