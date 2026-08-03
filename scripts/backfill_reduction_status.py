@@ -63,6 +63,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 
 import psycopg
 from astropy.time import Time
@@ -76,6 +77,29 @@ CADC_TAP_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus"
 MAST_TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom"
 ESO_TAP_URL = "http://archive.eso.org/tap_obs"
 OIRSA_TAP_URL = "http://oirsa.cfa.harvard.edu:8080/tap"
+
+# CADC's TAP service was confirmed live (2026-08-03) to intermittently stall
+# past make_tap_service's 180s read timeout under load -- without a retry, a
+# single bad page kills the whole archive's progress (gemini's ~1300-window
+# walk in particular would have to restart from window 0). 3 attempts with a
+# fixed 30s backoff between them; a failure on the 3rd attempt still
+# propagates up to main()'s per-archive try/except, which moves on to the
+# next archive rather than crashing the whole script.
+TAP_SEARCH_RETRIES = 3
+TAP_SEARCH_BACKOFF_SECONDS = 30
+
+
+def _tap_search(tap, query: str, maxrec: int):
+    for attempt in range(1, TAP_SEARCH_RETRIES + 1):
+        try:
+            return tap.search(query, maxrec=maxrec).to_table()
+        except Exception:
+            if attempt == TAP_SEARCH_RETRIES:
+                raise
+            logger.warning(
+                "TAP query failed (attempt %d/%d), retrying in %ds", attempt, TAP_SEARCH_RETRIES, TAP_SEARCH_BACKOFF_SECONDS
+            )
+            time.sleep(TAP_SEARCH_BACKOFF_SECONDS)
 
 
 def _update_by_obs_id(conn: psycopg.Connection, archive_code: str, obs_ids: list[str], statuses: list[str]) -> int:
@@ -211,10 +235,9 @@ def _backfill_cadc_style(conn: psycopg.Connection, archive_code: str, obs_collec
     last_t_min = 0.0
     total = 0
     while True:
-        table = tap.search(
-            query.format(page_size=page_size, obs_collection=obs_collection, last_t_min=last_t_min),
-            maxrec=page_size,
-        ).to_table()
+        table = _tap_search(
+            tap, query.format(page_size=page_size, obs_collection=obs_collection, last_t_min=last_t_min), page_size
+        )
         if len(table) == 0:
             break
         obs_ids, statuses = [], []
@@ -253,7 +276,7 @@ def backfill_gemini(conn: psycopg.Connection) -> None:
     windows_done = 0
     while window_start < now_t_min:
         window_end = window_start + window_days
-        table = tap.search(query.format(window_start=window_start, window_end=window_end), maxrec=20000).to_table()
+        table = _tap_search(tap, query.format(window_start=window_start, window_end=window_end), 20000)
         if len(table) > 0:
             obs_ids, statuses = [], []
             for row in table:
@@ -285,7 +308,7 @@ def backfill_eso(conn: psycopg.Connection) -> None:
     last_t_min = 0.0
     total = 0
     while True:
-        table = tap.search(query.format(page_size=page_size, last_t_min=last_t_min), maxrec=page_size).to_table()
+        table = _tap_search(tap, query.format(page_size=page_size, last_t_min=last_t_min), page_size)
         if len(table) == 0:
             break
         obs_ids, statuses = [], []
@@ -311,7 +334,7 @@ def backfill_oirsa(conn: psycopg.Connection) -> None:
     paginating, since there's nothing to gain from chunking here."""
     tap = make_tap_service(OIRSA_TAP_URL)
     query = "SELECT TOP 2000000 obs_publisher_did, calib_level FROM ivoa.obscore WHERE dataproduct_type = 'spectrum'"
-    table = tap.search(query, maxrec=2000000).to_table()
+    table = _tap_search(tap, query, 2000000)
     obs_ids, statuses = [], []
     for row in table:
         status = reduction_status_from_calib_level(row["calib_level"])
@@ -342,7 +365,7 @@ def backfill_mast(conn: psycopg.Connection) -> None:
     last_t_min = 0.0
     total = 0
     while True:
-        table = tap.search(query.format(page_size=page_size, last_t_min=last_t_min), maxrec=page_size).to_table()
+        table = _tap_search(tap, query.format(page_size=page_size, last_t_min=last_t_min), page_size)
         if len(table) == 0:
             break
         obs_ids, urls, statuses = [], [], []
@@ -385,7 +408,7 @@ def backfill_mast_jwst(conn: psycopg.Connection) -> None:
     windows_done = 0
     while lo < now_mjd:
         hi = lo + window_days
-        table = tap.search(query.format(page_size=page_size, lo=lo, hi=hi), maxrec=page_size).to_table()
+        table = _tap_search(tap, query.format(page_size=page_size, lo=lo, hi=hi), page_size)
         if len(table) > 0:
             obs_ids, urls, statuses = [], [], []
             for row in table:
@@ -428,10 +451,27 @@ def main() -> None:
     if unknown:
         raise SystemExit(f"Unknown archive_code(s): {sorted(unknown)}. Valid: {sorted(ARCHIVE_BACKFILLS.keys())}")
 
+    # Same per-archive isolation as sync/main.py's own driver -- an external
+    # TAP service timing out (confirmed live: CADC hung mid-page during this
+    # script's first production run, 2026-08-03) shouldn't take down every
+    # archive after it. Each backfill function already commits per-page, so
+    # a failed archive just leaves its own reduction_status = 'unknown' rows
+    # in place -- safe to re-run (this whole script is idempotent) once the
+    # underlying service recovers.
+    failed = []
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         for archive_code in archive_codes:
             logger.info("=== starting %s ===", archive_code)
-            ARCHIVE_BACKFILLS[archive_code](conn)
+            try:
+                ARCHIVE_BACKFILLS[archive_code](conn)
+            except Exception:
+                logger.exception("%s: failed", archive_code)
+                conn.rollback()
+                failed.append(archive_code)
+
+    if failed:
+        logger.error("archives failed: %s", ", ".join(failed))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
