@@ -60,6 +60,8 @@ No native Gaia column, no cliff found in ORDER BY t_mid pagination up to
 dao.py/mast.py.
 """
 
+from __future__ import annotations
+
 from datetime import date
 
 from sync.base import RawObservation, clean_float, make_tap_service
