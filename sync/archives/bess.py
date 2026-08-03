@@ -66,6 +66,18 @@ present on some rows (BD+34 113, RX J0048.5-7302) and absent on others
 (gam Cas) with no visible pattern to which -- to correctly reach the
 date/HJD/id fields that follow.
 
+reduction_status: every submission is a wavelength-calibrated 1D extracted
+spectrum (checked against a required FITS format at upload time -- see
+Documentation.php/FAQ.php), never a raw 2D CCD frame, so 'reduced' is the
+right side of this project's coarse raw/reduced bucket even though BeSS's
+own FAQ explicitly says flux specifically is *not* calibrated ("since the
+flux of the spectra are not calibrated, a rescaling does not influence the
+spectrum" -- continuum normalization is a separate, optional, discouraged-
+before-upload step via BSS_NORM). A softer claim than the real ObsCore
+calib_level>=2 the other archives in sync.base.reduction_status_from_
+calib_level rely on, but still clearly not "raw" in this column's 2-way
+sense.
+
 ARCHIVE_URL_TMPL: BeSS renders a PNG plot of every spectrum at a
 predictable static path outside any PHP session -- confirmed live,
 unauthenticated, across 4 different ids spanning different id ranges:
@@ -267,6 +279,7 @@ def _parse_spectra_page(html: str, star_name: str) -> tuple[list[RawObservation]
                 ra=ra,
                 dec=dec,
                 raw_target_name=(m["name"].strip() or star_name) or None,
+                reduction_status="reduced",
             )
         )
     deb_match = _DEB_NEXT_RE.search(html)
