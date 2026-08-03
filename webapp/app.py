@@ -420,12 +420,13 @@ PAGE_TEMPLATE = """
       <details{% if holdings|length == 1 %} open{% endif %}>
         <summary>{{ g.display_name }} — {{ g.instrument or "—" }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
         <table>
-          <tr><th>Date</th><th>Match</th><th>Method</th><th>Link</th></tr>
+          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th></tr>
           {% for h in g.observations %}
           <tr>
             <td>{{ h.obs_date or "—" }}</td>
             <td>{{ h.match_status }}</td>
             <td>{{ h.match_method }}</td>
+            <td>{{ h.reduction_status }}</td>
             <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
           </tr>
           {% endfor %}
@@ -640,7 +641,7 @@ def search():
             h["archive"] = h["display_name"]
         return _csv_response(
             ["query", "source_id", "status", "known_as",
-             "archive", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
+             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status", "archive_url"],
             raw_holdings,
             f"spectra_database_holdings_{source_id if source_id is not None else star['star_id']}.csv",
         )
@@ -1940,7 +1941,7 @@ INFO_TEMPLATE = """
   <p class="note">Either an ambiguous positional match (2+ tracked stars fell within the 1.0" radius of the archive's reported position) or a name match rejected as implausible with no positional candidate to fall back on (see How matching works above) — in both cases no single star was assigned automatically. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
   {% if needs_review %}
     <table>
-      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th><th>Best separation</th></tr>
+      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th><th>Best separation</th><th>Reduction</th></tr>
       {% for r in needs_review %}
       <tr>
         <td>{{ r.display_name }}</td>
@@ -1948,6 +1949,7 @@ INFO_TEMPLATE = """
         <td>{{ "%.4f, %.4f"|format(r.raw_ra, r.raw_dec) if r.raw_ra is not none and r.raw_dec is not none else "—" }}</td>
         <td>{{ r.obs_date or "—" }}</td>
         <td>{{ '%.2f"'|format(r.theta_arcsec) if r.theta_arcsec is not none else "—" }}</td>
+        <td>{{ r.reduction_status }}</td>
       </tr>
       {% endfor %}
     </table>
@@ -1967,13 +1969,14 @@ INFO_TEMPLATE = """
   <h3 id="skipped-list">{% if archive_filter %}{{ archive_filter }} — {% endif %}Most recent skipped{% if archive_filter %} <a href="/info">(clear filter)</a>{% endif %}</h3>
   {% if skipped %}
     <table>
-      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th></tr>
+      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th><th>Reduction</th></tr>
       {% for r in skipped %}
       <tr>
         <td>{{ r.display_name }}</td>
         <td>{{ r.raw_target_name or "—" }}</td>
         <td>{{ "%.4f, %.4f"|format(r.raw_ra, r.raw_dec) if r.raw_ra is not none and r.raw_dec is not none else "—" }}</td>
         <td>{{ r.obs_date or "—" }}</td>
+        <td>{{ r.reduction_status }}</td>
       </tr>
       {% endfor %}
     </table>
@@ -2016,7 +2019,7 @@ def info():
 
     cur.execute(
         """
-        SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.theta_arcsec
+        SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.theta_arcsec, h.reduction_status
         FROM spectroscopy_holdings h
         JOIN archives a ON a.archive_code = h.archive_code
         WHERE h.match_status = 'needs_review'
@@ -2042,7 +2045,7 @@ def info():
     if archive_filter:
         cur.execute(
             """
-            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date
+            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.reduction_status
             FROM spectroscopy_holdings h
             JOIN archives a ON a.archive_code = h.archive_code
             WHERE h.match_status = 'skipped' AND h.archive_code = ?
@@ -2054,7 +2057,7 @@ def info():
     else:
         cur.execute(
             """
-            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date
+            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.reduction_status
             FROM spectroscopy_holdings h
             JOIN archives a ON a.archive_code = h.archive_code
             WHERE h.match_status = 'skipped'
@@ -2173,7 +2176,7 @@ def batch_search():
             cur.execute(
                 """
                 SELECT s.gaia_source_id, a.display_name, h.instrument, h.obs_date,
-                       h.match_status, h.match_method, h.archive_url
+                       h.match_status, h.match_method, h.reduction_status, h.archive_url
                 FROM spectroscopy_holdings h
                 JOIN stars s ON s.star_id = h.star_id
                 JOIN archives a ON a.archive_code = h.archive_code
@@ -2196,19 +2199,21 @@ def batch_search():
             star_holdings = holdings_by_source_id.get(r["source_id"], []) if r["source_id"] is not None else []
             if not star_holdings:
                 csv_rows.append({**base, "archive": None, "instrument": None, "obs_date": None,
-                                  "match_status": None, "match_method": None, "archive_url": None})
+                                  "match_status": None, "match_method": None, "reduction_status": None,
+                                  "archive_url": None})
             else:
                 for h in star_holdings:
                     csv_rows.append({
                         **base,
                         "archive": h["display_name"], "instrument": h["instrument"], "obs_date": h["obs_date"],
                         "match_status": h["match_status"], "match_method": h["match_method"],
+                        "reduction_status": h["reduction_status"],
                         "archive_url": h["archive_url"],
                     })
 
         return _csv_response(
             ["query", "source_id", "status", "known_as",
-             "archive", "instrument", "obs_date", "match_status", "match_method", "archive_url"],
+             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status", "archive_url"],
             csv_rows,
             "spectra_database_batch_lookup.csv",
         )
