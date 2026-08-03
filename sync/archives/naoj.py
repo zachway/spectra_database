@@ -94,6 +94,26 @@ def _product_rank(access_url: str, access_format: str) -> int:
     return len(_FITS_INFIX_PRIORITY) + 2  # text/plain, or anything else
 
 
+def _reduction_status(access_url: str, access_format: str) -> str | None:
+    """Reuses _product_rank's own tier detection rather than re-deriving it --
+    a FITS row matching one of _FITS_INFIX_PRIORITY's infixes has had at least
+    wavelength-correction applied (per module docstring: "raw/wavelength-
+    corrected/1D-extracted" are the three real FITS variants seen live), so
+    any matched infix means 'reduced'. A FITS row matching none of them is the
+    plain raw variant; a .tar is a packaged pre-pipeline observation (per
+    docstring, also raw). text/plain dumps aren't documented well enough to
+    call either way.
+    """
+    if access_format == "application/fits":
+        for infix in _FITS_INFIX_PRIORITY:
+            if infix in access_url:
+                return "reduced"
+        return "raw"
+    if access_format == "application/x-tar":
+        return "raw"
+    return None
+
+
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_t_min = cursor.get("last_t_min", 0)
 
@@ -135,6 +155,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             ra=clean_float(data["s_ra"]),
             dec=clean_float(data["s_dec"]),
             raw_target_name=data["target_name"],
+            reduction_status=_reduction_status(data["access_url"], data["access_format"]),
         )
         for raw_id, data in by_raw_id.items()
     ]

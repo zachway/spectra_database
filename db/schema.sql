@@ -116,6 +116,22 @@ CREATE TABLE spectroscopy_holdings (
     match_status         TEXT NOT NULL CHECK (match_status IN ('matched', 'needs_review', 'rejected', 'skipped')),
     theta_arcsec          REAL,   -- separation for positional matches; null for direct-column matches
 
+    -- Coarse raw-vs-reduced bucket, not the full IVOA ObsCore calib_level
+    -- scale (0-3) some archives are derived from (see sync.base.
+    -- reduction_status_from_calib_level) — 'unknown' is the honest default
+    -- for the many archives here with no calib_level column or other
+    -- documented signal to go on (a plain HTML-form/bulk-file/SSA archive
+    -- rarely says which processing stage its one download link serves).
+    -- Populated today for: mast/mast_jwst/eso/cfht_cadc/dao/gemini/oirsa
+    -- (real ObsCore calib_level, confirmed live 2026-08-03), koa (raw-only
+    -- per-instrument tables, koa_reduced_data deliberately excluded),
+    -- gemini_ghost/gemini_igrins (GOA fetch already filters to reduced
+    -- filenames only), naoj (per-exposure product-tier already ranked/
+    -- picked). Everywhere else stays 'unknown' until a real per-archive
+    -- signal is found.
+    reduction_status      TEXT NOT NULL DEFAULT 'unknown'
+                             CHECK (reduction_status IN ('raw', 'reduced', 'unknown')),
+
     -- Retained for needs_review rows (and as an audit trail for matched ones):
     -- the archive's own reported identity/position, independent of our match.
     raw_target_name        TEXT,

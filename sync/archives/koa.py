@@ -145,6 +145,10 @@ def _fetch_instrument(tap, instrument: str, table: str, mjd_col: str, last_mjd: 
                 ra=clean_float(row["ra"]),
                 dec=clean_float(row["dec"]),
                 raw_target_name=str(row["object"]),
+                # Every table queried here is one of KOA's raw per-instrument
+                # tables -- koa_reduced_data (the actual processed-products
+                # table) is deliberately out of scope, see module docstring.
+                reduction_status="raw",
             )
         )
 

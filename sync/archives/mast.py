@@ -53,12 +53,12 @@ as the existing ra/dec-required check in sync.matcher.
 
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service, reduction_status_from_calib_level
 
 TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom"
 
 QUERY = """
-SELECT TOP {page_size} obs_id, s_ra, s_dec, t_min, instrument_name, target_name, access_url
+SELECT TOP {page_size} obs_id, s_ra, s_dec, t_min, instrument_name, target_name, access_url, calib_level
 FROM ivoa.obscore
 WHERE dataproduct_type='spectrum' AND obs_collection IN ('HST', 'IUE', 'FUSE')
 AND access_format IN ('application/fits', 'image/fits')
@@ -98,6 +98,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 "s_ra": row["s_ra"],
                 "s_dec": row["s_dec"],
                 "target_name": str(row["target_name"]),
+                "calib_level": row["calib_level"],
             }
 
     records = [
@@ -109,6 +110,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             ra=clean_float(data["s_ra"]),
             dec=clean_float(data["s_dec"]),
             raw_target_name=data["target_name"],
+            reduction_status=reduction_status_from_calib_level(data["calib_level"]),
         )
         for obs_id, data in by_obs_id.items()
     ]

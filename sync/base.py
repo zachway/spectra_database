@@ -56,6 +56,16 @@ class RawObservation:
     gaia_source_id: set only if the archive itself carries a Gaia source_id
     for this record (direct_gaia_column path). Leave None to go through
     positional_easy_match instead, in which case ra/dec/obs_date are required.
+
+    reduction_status: 'raw' | 'reduced' | None (stored as 'unknown' by
+    sync.matcher). Deliberately a coarse 2-way bucket, not the IVOA ObsCore
+    calib_level scale it's often derived from (0=raw telemetry, 1=instrument-
+    signature-removed, 2=calibrated to standard units, 3=enhanced/combined) —
+    see reduction_status_from_calib_level. Only worth setting when an archive
+    module has good grounds to know it (a real calib_level column, or an
+    already-established fact about what that archive's access path serves,
+    e.g. koa.py's raw-only per-instrument tables) — leave None rather than
+    guess for archives with no such signal.
     """
 
     archive_obs_id: str
@@ -67,6 +77,22 @@ class RawObservation:
     ra: float | None = None   # deg, ICRS, at obs_date
     dec: float | None = None  # deg, ICRS, at obs_date
     raw_target_name: str | None = None
+    reduction_status: str | None = None
+
+
+def reduction_status_from_calib_level(calib_level) -> str | None:
+    """Maps an IVOA ObsCore calib_level value (0-3, possibly masked/NULL) to
+    this project's coarse raw/reduced bucket — confirmed live (2026-08-03)
+    that calib_level is a real, populated column returning genuinely
+    different values across the ObsCore-based archives in this project (CADC:
+    CFHT=2, DAO=1, Gemini MAROON-X=1; MAST: FUSE=2, JWST=3, HST=2-3; ESO
+    PESSTO=2; OIRSA=1 across all four instruments) — not a placeholder that's
+    always the same value.
+    """
+    level = clean_float(calib_level)
+    if level is None:
+        return None
+    return "raw" if level <= 1 else "reduced"
 
 
 # A per-archive fetch function has this shape: given the last sync_cursor,
