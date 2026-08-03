@@ -492,7 +492,7 @@ PAGE_TEMPLATE = """
 
     {% if wavelength_chart %}
       <h3>Wavelength coverage</h3>
-      <p class="note">Each bar is one archive/instrument's published wavelength range. Bars are packed onto as few rows as possible -- two bars share a row whenever their ranges don't overlap, and only split onto separate rows where they do.</p>
+      <p class="note">Each bar is one archive/instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power.</p>
       <div id="wavelength-plot"></div>
       <script>
         (function() {
@@ -504,10 +504,8 @@ PAGE_TEMPLATE = """
             base: bars.map(function(b) { return b.wave_min; }),
             x: bars.map(function(b) { return b.wave_max - b.wave_min; }),
             y: bars.map(function(b) { return b.row; }),
-            width: 0.5,
+            width: 0.7,
             marker: { color: bars.map(function(b) { return b.color; }) },
-            text: bars.map(function(b) { return b.label + '<br>' + b.resolving_power; }),
-            textposition: 'outside',
             hovertext: bars.map(function(b) {
               return b.label + '<br>' + b.resolving_power + '<br>' +
                 b.wave_min + '–' + b.wave_max + ' nm';
@@ -517,8 +515,8 @@ PAGE_TEMPLATE = """
           };
           Plotly.newPlot('wavelength-plot', [trace], {
             barmode: 'overlay',
-            height: 90 + nRows * 70,
-            margin: { l: 20, r: 20, t: 10, b: 45 },
+            height: Math.max(60, 20 + nRows * 22),
+            margin: { l: 8, r: 8, t: 4, b: 28 },
             xaxis: { title: 'Wavelength (nm)', type: 'log' },
             yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
           }, { responsive: true, displayModeBar: false });
