@@ -146,6 +146,49 @@ SKY_SAMPLE_QUERY = f"""
     USING SAMPLE {SKY_SAMPLE_SIZE}
 """
 
+# Precomputed (normalized name -> identifier) index backing
+# webapp.app._lookup_local_star's name-matching branch. That branch used to
+# filter `stars` directly with normalize() wrapped around input_name/
+# name_aliases in the WHERE clause -- confirmed live that wrapping the
+# filtered columns in a function defeats Parquet's row-group min/max pruning
+# entirely (pruning needs a bare column vs. a constant), so *every*
+# name-based search -- i.e. nearly every real query, since people type "HD
+# 110067" rather than a Gaia source_id -- pulled nearly the entire
+# multi-hundred-MB stars.parquet over HTTP. Same OOM/timeout shape as the
+# stars/spectroscopy_holdings sorting fixes below, just on the search path
+# those fixes don't cover (they only help the numeric-ID branch).
+#
+# This table holds only a few short columns (vs. stars' full wide schema),
+# one row per input_name and one more per alias, so even a full scan of it
+# is fast regardless of pruning. webapp.app's name branch looks up here
+# first to resolve gaia_source_id/bsc_hr_number, then falls through to the
+# already-pruning-friendly numeric lookup against `stars`.
+#
+# NORMALIZE_SQL must match webapp.app's _normalize_star_name exactly (same
+# duplicated-constant tradeoff as SKY_SAMPLE_SIZE/CMD_SAMPLE_SIZE below --
+# export_to_parquet.py can't import webapp.app without triggering its
+# module-level _make_connection(), which needs SPECTRA_DATA_URL/DIR set)
+# -- otherwise a name normalized one way here and looked up another way in
+# the webapp would silently never match.
+STAR_NAME_INDEX_NORMALIZE_SQL = r"lower(regexp_replace(regexp_replace(trim({col}), '^(NAME|\*)\s+', '', 'i'), '\s+', ' ', 'g'))"
+
+STAR_NAME_INDEX_QUERY = f"""
+SELECT DISTINCT
+    {STAR_NAME_INDEX_NORMALIZE_SQL.format(col="name")} AS normalized_name,
+    gaia_source_id,
+    bsc_hr_number
+FROM (
+    SELECT gaia_source_id, bsc_hr_number, input_name AS name
+    FROM pg.stars
+    UNION ALL
+    SELECT gaia_source_id, bsc_hr_number, UNNEST(name_aliases) AS name
+    FROM pg.stars
+    WHERE name_aliases IS NOT NULL
+)
+WHERE name IS NOT NULL AND trim(name) != ''
+ORDER BY normalized_name
+"""
+
 LEADERBOARD_TOP_N = 20
 
 # Fully precomputed Leaderboard chart data — not just the raw per-(star,
@@ -704,6 +747,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
                 select_sql += " ORDER BY gaia_source_id"
             _atomic_copy(con, select_sql, path)
             logger.info("exported %s -> %s", table, path)
+
+        star_name_index_path = os.path.join(out_dir, "star_name_index.parquet")
+        _atomic_copy(con, STAR_NAME_INDEX_QUERY, star_name_index_path)
+        logger.info("exported star_name_index -> %s", star_name_index_path)
 
         leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
         _export_leaderboard(con, leaderboard_path)
