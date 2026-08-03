@@ -201,6 +201,79 @@ def _group_holdings(holdings: list[dict]) -> list[dict]:
     return [groups[k] for k in order]
 
 
+# Categorical palette for the wavelength-coverage chart below (dataviz
+# skill's default 8-slot categorical order -- validated for adjacent-pair
+# CVD/contrast under the "bars" pairlist, see references/palette.md).
+# Assigned per-star (not globally across every archive_code) since no star
+# in practice has holdings from more than a handful of archives at once.
+WAVELENGTH_CHART_PALETTE = [
+    '#2a78d6', '#eb6834', '#1baf7a', '#eda100',
+    '#e87ba4', '#008300', '#4a3aa7', '#e34948',
+]
+
+
+def _pack_wavelength_rows(intervals: list[tuple[float, float]]) -> list[int]:
+    """Greedy interval-graph-coloring row assignment for the wavelength
+    chart below: sort by start, place each interval in the first existing
+    row whose last-placed bar already ended (row_end <= this start), else
+    open a new row. First-fit-by-start-order is optimal for interval
+    graphs -- the row count it produces equals the maximum simultaneous
+    overlap depth, which is exactly "share a row whenever two bars don't
+    overlap, split only when they do" -- the chart's whole point."""
+    order = sorted(range(len(intervals)), key=lambda i: intervals[i][0])
+    row_end: list[float] = []
+    rows = [0] * len(intervals)
+    for i in order:
+        start, end = intervals[i]
+        for r, e in enumerate(row_end):
+            if e <= start:
+                row_end[r] = end
+                rows[i] = r
+                break
+        else:
+            row_end.append(end)
+            rows[i] = len(row_end) - 1
+    return rows
+
+
+def _wavelength_coverage_bars(holdings_groups: list[dict]) -> dict | None:
+    """Build the search page's wavelength-coverage chart data: one bar per
+    (archive, instrument) group with a published range in
+    INSTRUMENT_WAVELENGTH_RANGE_NM, packed onto as few y-rows as possible
+    (see _pack_wavelength_rows). Groups with no known range -- BeSS's
+    hundreds of free-text amateur setups, a handful of obscure retired
+    instruments, see INSTRUMENT_WAVELENGTH_RANGE_NM's own comment -- are
+    silently skipped; returns None if nothing here could be plotted at all
+    (so the template can omit the chart entirely rather than show an empty
+    plot)."""
+    bars = []
+    for g in holdings_groups:
+        coverage = INSTRUMENT_WAVELENGTH_RANGE_NM.get((g["display_name"], g["instrument"]))
+        if coverage is None:
+            continue
+        bars.append({
+            "archive": g["display_name"],
+            "label": f"{g['display_name']} — {g['instrument']}",
+            "resolving_power": g["resolving_power"],
+            "wave_min": coverage[0],
+            "wave_max": coverage[1],
+        })
+    if not bars:
+        return None
+
+    rows = _pack_wavelength_rows([(b["wave_min"], b["wave_max"]) for b in bars])
+    archive_order: list[str] = []
+    for b in bars:
+        if b["archive"] not in archive_order:
+            archive_order.append(b["archive"])
+
+    for b, row in zip(bars, rows):
+        b["row"] = row
+        b["color"] = WAVELENGTH_CHART_PALETTE[archive_order.index(b["archive"]) % len(WAVELENGTH_CHART_PALETTE)]
+
+    return {"bars": bars, "n_rows": max(rows) + 1}
+
+
 # How many stars the CMD plots as individually-clickable points. The
 # underlying list (the CMD_SAMPLE_SIZE most-observed stars with valid
 # photometry) is precomputed by scripts.export_to_parquet, not sampled here
@@ -297,7 +370,7 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool)
 
 def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_results=None, radius_display=None):
     return render_template_string(
-        PAGE_TEMPLATE, query=None, star=None, holdings=None,
+        PAGE_TEMPLATE, query=None, star=None, holdings=None, wavelength_chart=None,
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
@@ -348,7 +421,10 @@ PAGE_TEMPLATE = """
 <head>
   <meta charset="utf-8">
   <title>Spectra Database</title>
-  <style>""" + SHARED_STYLE + """</style>
+  <style>""" + SHARED_STYLE + """
+    #wavelength-plot { width: 100%; margin-top: 0.5rem; }
+  </style>
+  {% if wavelength_chart %}<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>{% endif %}
 </head>
 <body>
   <h1>Spectra Database</h1>""" + NAV_HTML + """
@@ -413,6 +489,42 @@ PAGE_TEMPLATE = """
       <dt>Gaia XP continuous</dt><dd>{{ "yes" if star.has_xp_continuous else "no" }}</dd>
       <dt>Known as</dt><dd>{{ (star.name_aliases | join(", ")) if star.name_aliases else (star.input_name or "—") }}</dd>
     </dl>
+
+    {% if wavelength_chart %}
+      <h3>Wavelength coverage</h3>
+      <p class="note">Each bar is one archive/instrument's published wavelength range. Bars are packed onto as few rows as possible -- two bars share a row whenever their ranges don't overlap, and only split onto separate rows where they do.</p>
+      <div id="wavelength-plot"></div>
+      <script>
+        (function() {
+          var bars = {{ wavelength_chart.bars | tojson }};
+          var nRows = {{ wavelength_chart.n_rows }};
+          var trace = {
+            type: 'bar',
+            orientation: 'h',
+            base: bars.map(function(b) { return b.wave_min; }),
+            x: bars.map(function(b) { return b.wave_max - b.wave_min; }),
+            y: bars.map(function(b) { return b.row; }),
+            width: 0.5,
+            marker: { color: bars.map(function(b) { return b.color; }) },
+            text: bars.map(function(b) { return b.label + '<br>' + b.resolving_power; }),
+            textposition: 'outside',
+            hovertext: bars.map(function(b) {
+              return b.label + '<br>' + b.resolving_power + '<br>' +
+                b.wave_min + '–' + b.wave_max + ' nm';
+            }),
+            hoverinfo: 'text',
+            showlegend: false,
+          };
+          Plotly.newPlot('wavelength-plot', [trace], {
+            barmode: 'overlay',
+            height: 90 + nRows * 70,
+            margin: { l: 20, r: 20, t: 10, b: 45 },
+            xaxis: { title: 'Wavelength (nm)', type: 'log' },
+            yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
+          }, { responsive: true, displayModeBar: false });
+        })();
+      </script>
+    {% endif %}
 
     {% if holdings %}
       <p><a href="?q={{ star_search_id }}&amp;format=csv">Download holdings as CSV</a></p>
@@ -479,7 +591,7 @@ PAGE_TEMPLATE = """
 
 def _blank(query=None, error=None, resolved_source_id=None):
     return render_template_string(
-        PAGE_TEMPLATE, query=query, star=None, holdings=None,
+        PAGE_TEMPLATE, query=query, star=None, holdings=None, wavelength_chart=None,
         error=error, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
@@ -489,7 +601,7 @@ def _blank(query=None, error=None, resolved_source_id=None):
 
 def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
     return render_template_string(
-        PAGE_TEMPLATE, query=None, star=None, holdings=None,
+        PAGE_TEMPLATE, query=None, star=None, holdings=None, wavelength_chart=None,
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
@@ -647,9 +759,11 @@ def search():
         )
 
     holdings = _group_holdings(raw_holdings)
+    wavelength_chart = _wavelength_coverage_bars(holdings)
 
     return render_template_string(
         PAGE_TEMPLATE, query=query, star=star, holdings=holdings, star_search_id=star_search_id,
+        wavelength_chart=wavelength_chart,
         error=None, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
@@ -1255,6 +1369,152 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('SDSS-V — APOGEE', 'APOGEE'): 'R ≈ 22,500',
     ('SDSS-V — Optical', 'SDSS-V/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
     ('SOPHIE (OHP)', 'SOPHIE'): 'R ≈ 39,000–75,000 (HE/HR mode)',
+}
+
+# Wavelength coverage (nm, vacuum/air distinction not tracked -- published
+# specs quoted at whatever precision the instrument's own documentation
+# uses) per (archive display_name, instrument) -- same hand-maintained,
+# same-key shape as INSTRUMENT_RESOLVING_POWER above (same reasoning: not
+# derivable from the database, no per-observation column for it). Powers the
+# /?q=... search page's wavelength-coverage chart -- see
+# _wavelength_coverage_bars. Deliberately a strict subset of
+# INSTRUMENT_RESOLVING_POWER's keys: n/a (imaging-only) entries are omitted
+# outright, and a handful of obscure/retired instruments this project
+# couldn't confirm a real published range for (e.g. CFHT's GECKO, PYTHIAS,
+# HERZBERG, OSIS, PUMA, SISFP, ISIS; Gemini's CIRPASS/OSCIR; NOIRLab's sami;
+# ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
+# HST's COS-STIS combined mode) are left out rather than guessed -- a
+# missing key just means that instrument's bar doesn't render, the same
+# graceful-degradation shape as INSTRUMENT_RESOLVING_POWER's own "—". A few
+# instruments (GALAH/HERMES, LAMOST-MRS) are non-contiguous multi-band
+# spectrographs -- the tuple here is the outer envelope (first band's blue
+# edge to last band's red edge), not literal continuous coverage; the chart
+# doesn't attempt to render the internal gap.
+INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
+    ('Asiago Observatory (Echelle)', 'Echelle + Andor iKon DW436-BV'): (360, 730),
+    ('Asiago Observatory (Echelle)', 'echelle hi-res Spectrograph'): (360, 730),
+    ('Asiago Observatory (Echelle)', 'Echelle Hi-Res Spectrograph'): (360, 730),
+    ('Asiago Observatory (Echelle)', 'ECHELLE REOSC'): (360, 730),
+    ('CARMENES', 'CARMENES VIS'): (520, 960),
+    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES NIR'): (960, 1710),
+    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES VIS'): (520, 960),
+    ('CFHT / CADC', 'SPIRou'): (980, 2350),
+    ('CFHT / CADC', 'ESPaDOnS'): (370, 1050),
+    ('CFHT / CADC', 'FTS'): (450, 1100),
+    ('CFHT / CADC', 'TIGER'): (400, 700),
+    ('CFHT / CADC', 'MOS'): (370, 900),
+    ('CFHT / CADC', 'SIS'): (370, 1000),
+    ('DAO (Dominion Astrophysical Observatory)', 'McKellar Spectrograph'): (350, 900),
+    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectrograph'): (350, 900),
+    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectropolarimeter'): (350, 900),
+    ('DESI', 'DESI'): (360, 980),
+    ('ELODIE (OHP)', 'ELODIE'): (390, 680),
+    ('ESO Science Archive', 'GIRAFFE'): (370, 900),
+    ('ESO Science Archive', 'HARPS'): (378, 691),
+    ('ESO Science Archive', 'XSHOOTER'): (300, 2480),
+    ('ESO Science Archive', 'VIMOS'): (360, 1000),
+    ('ESO Science Archive', 'FORS2'): (330, 1100),
+    ('ESO Science Archive', 'UVES'): (300, 1100),
+    ('ESO Science Archive', 'FEROS'): (350, 920),
+    ('ESO Science Archive', 'NIRPS'): (980, 1800),
+    ('ESO Science Archive', 'ESPRESSO'): (380, 788),
+    ('ESO Science Archive', 'EFOSC'): (330, 1100),
+    ('ESO Science Archive', 'KMOS'): (800, 2500),
+    ('ESO Science Archive', 'CRIRES'): (950, 5300),
+    ('ESO Science Archive', 'SOFI'): (950, 2500),
+    ('ESO Science Archive', 'FORS1'): (330, 1100),
+    ('ESO Science Archive', 'MUSE'): (480, 930),
+    ('ESO Science Archive', 'SINFONI'): (1100, 2450),
+    ('FEROS Public Spectra (GAVO)', 'FEROS'): (350, 920),
+    ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): (350, 870),
+    ('GALAH', 'GALAH (HERMES)'): (471, 789),
+    ('GTC (Gran Telescopio CANARIAS)', 'EMIR'): (900, 2500),
+    ('GTC (Gran Telescopio CANARIAS)', 'OSIRIS'): (365, 1000),
+    ('GTC (Gran Telescopio CANARIAS)', 'MEGARA'): (365, 1000),
+    ('GTC (Gran Telescopio CANARIAS)', 'HORuS'): (383, 690),
+    ('GTC (Gran Telescopio CANARIAS)', 'CANARICAM'): (8000, 25000),
+    ('Gaia RVS', 'Gaia RVS'): (846, 870),
+    ('Gemini Observatory Archive', 'GNIRS'): (900, 2500),
+    ('Gemini Observatory Archive', 'GMOS-N'): (360, 1000),
+    ('Gemini Observatory Archive', 'GMOS-S'): (360, 1000),
+    ('Gemini Observatory Archive', 'PHOENIX'): (1000, 5000),
+    ('Gemini Observatory Archive', 'GPI'): (900, 2400),
+    ('Gemini Observatory Archive', 'NIRI'): (1000, 2500),
+    ('Gemini Observatory Archive', 'NIFS'): (940, 2500),
+    ('Gemini Observatory Archive', 'F2'): (900, 2500),
+    ('Gemini Observatory Archive', 'GRACES'): (500, 1050),
+    ('Gemini Observatory Archive', 'MAROON-X'): (500, 920),
+    ('Gemini Observatory Archive', 'michelle'): (7900, 25300),
+    ('Gemini Observatory Archive', 'TEXES'): (5000, 25000),
+    ('Gemini Observatory Archive', 'TReCS'): (8000, 25000),
+    ('Gemini Observatory Archive', 'GHOST'): (363, 1000),
+    ('Gemini Observatory Archive', 'FLAMINGOS'): (1000, 2500),
+    ('Gemini Observatory Archive', 'bHROS'): (350, 1050),
+    ('Gemini Observatory Archive — GHOST', 'GHOST'): (363, 1000),
+    ('Gemini Observatory Archive — IGRINS', 'IGRINS'): (1450, 2450),
+    ('HARPS-N (TNG)', 'HARPS-N'): (383, 693),
+    ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): (377, 900),
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): (500, 1000),
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): (300, 550),
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): (500, 1000),
+    ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): (300, 550),
+    ('Keck Observatory Archive', 'NIRSPEC'): (950, 5500),
+    ('Keck Observatory Archive', 'HIRES'): (300, 1000),
+    ('Keck Observatory Archive', 'MOSFIRE'): (970, 2450),
+    ('Keck Observatory Archive', 'LRIS'): (300, 1100),
+    ('Keck Observatory Archive', 'NIRES'): (940, 2450),
+    ('Keck Observatory Archive', 'OSIRIS'): (1000, 2400),
+    ('Keck Observatory Archive', 'DEIMOS'): (410, 1100),
+    ('Keck Observatory Archive', 'KPF'): (445, 870),
+    ('Keck Observatory Archive', 'ESI'): (390, 1090),
+    ('LAMOST', 'LAMOST'): (370, 900),
+    ('LAMOST — MRS', 'LAMOST-MRS'): (495, 685),
+    ('LBT — PEPSI', 'MODS'): (320, 1000),
+    ('LBT — PEPSI', 'LUCI'): (850, 2500),
+    ('LBT — PEPSI', 'PEPSI'): (383, 907),
+    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): (374, 970),
+    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): (330, 1000),
+    ('MAST', 'WFC3/IR'): (800, 1700),
+    ('MAST', 'COS/FUV'): (90, 205),
+    ('MAST', 'STIS/CCD'): (164, 1030),
+    ('MAST', 'NICMOS/NIC3'): (1400, 2500),
+    ('MAST', 'HRS/2'): (115, 320),
+    ('MAST', 'FOS/RD'): (160, 850),
+    ('MAST', 'STIS/FUV-MAMA'): (115, 170),
+    ('MAST', 'FOS/BL'): (130, 550),
+    ('MAST', 'COS/NUV'): (165, 320),
+    ('MAST', 'STIS/NUV-MAMA'): (165, 310),
+    ('MAST', 'COS'): (90, 320),
+    ('MAST', 'STIS'): (115, 1030),
+    ('MAST', 'HRS/1'): (105, 320),
+    ('MAST — JWST', 'NIRSPEC/MSA'): (600, 5300),
+    ('MAST — JWST', 'NIRCAM/GRISM'): (2400, 5000),
+    ('MAST — JWST', 'NIRSPEC/SLIT'): (600, 5300),
+    ('MAST — JWST', 'NIRISS/WFSS'): (800, 2200),
+    ('MAST — JWST', 'MIRI/SLIT'): (5000, 12000),
+    ('MAST — JWST', 'NIRSPEC'): (600, 5300),
+    ('MAST — JWST', 'MIRI/SLITLESS'): (5000, 12000),
+    ('MAST — JWST', 'NIRISS/SOSS'): (600, 2800),
+    ('NAOJ (Subaru HDS, via JVO)', 'HDS'): (300, 1000),
+    ('NOIRLab Astro Data Archive', 'goodman'): (320, 900),
+    ('NOIRLab Astro Data Archive', 'echelle'): (350, 900),
+    ('NOIRLab Astro Data Archive', 'chiron'): (410, 870),
+    ('NOIRLab Astro Data Archive', 'triplespec'): (950, 2460),
+    ('NOIRLab Astro Data Archive', 'ghts_red'): (500, 900),
+    ('NOIRLab Astro Data Archive', 'arcoiris'): (700, 2450),
+    ('NOIRLab Astro Data Archive', 'cosmos'): (350, 950),
+    ('NOIRLab Astro Data Archive', 'kosmos'): (330, 1000),
+    ('NOIRLab Astro Data Archive', 'ghts_blue'): (320, 700),
+    ('OIRSA (CfA)', 'Hectospec'): (370, 920),
+    ('OIRSA (CfA)', 'Hectochelle'): (500, 900),
+    ('OIRSA (CfA)', 'echelle'): (350, 900),
+    ('OIRSA (CfA)', 'FAST'): (350, 750),
+    ('RAVE', 'RAVE'): (841, 879),
+    ('SALT HRS (SAAO SSDA)', 'HRS'): (370, 890),
+    ('SDSS Legacy Optical', 'SDSS/BOSS'): (360, 1040),
+    ('SDSS-V — APOGEE', 'APOGEE'): (1514, 1696),
+    ('SDSS-V — Optical', 'SDSS-V/BOSS'): (360, 1040),
+    ('SOPHIE (OHP)', 'SOPHIE'): (387, 694),
 }
 
 INSTRUMENTS_TEMPLATE = """
