@@ -34,6 +34,10 @@ directly. `medspectrum/fits/{obsid}` confirmed live as the one real hit
 (Content-Type: application/gzip, valid gzip, unpacks to a real
 `med-58025-HIP507401_sp02-003.fits`) — every other guess 404s dressed up as
 a 200 (its own JSON error body, Content-Type: application/json).
+
+reduction_status is hardcoded 'reduced' -- medspectrum/fits/{obsid} serves
+the pipeline-combined, wavelength-calibrated MRS spectrum (same standard
+public-product tier as LRS's lamost.py), never a raw CCD frame.
 """
 
 import requests
@@ -79,6 +83,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="LAMOST-MRS",
                 obs_date=Time(int(row["mjd"]), format="mjd").to_datetime().date(),
                 gaia_source_id=int(row["gaia_source_id"]),
+                reduction_status="reduced",
             )
         )
 

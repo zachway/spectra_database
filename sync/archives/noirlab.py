@@ -64,6 +64,10 @@ specifically, so a production cursor written before this change doesn't
 silently restart goodman from 1990 (UNIQUE (archive_code, archive_obs_id)
 would make that harmless, just wasteful — this avoids the waste).
 
+reduction_status is hardcoded 'raw' -- the search filter below explicitly
+pins `proc_type` to "raw" (line: ["proc_type", "raw"]), so every row this
+module ever returns is, by construction, an unreduced exposure.
+
 fetch() queries every instrument once per call rather than converging one
 at a time — sync.main's driver only stops once a whole page returns zero
 records, so an instrument that's already caught up just contributes an
@@ -149,6 +153,7 @@ def _fetch_instrument(instrument: str, last_dateobs: str) -> tuple[list[RawObser
                 ra=clean_float(row["ra_center"]),
                 dec=clean_float(row["dec_center"]),
                 raw_target_name=str(row["OBJECT"]) if row.get("OBJECT") else None,
+                reduction_status="raw",
             )
         )
 

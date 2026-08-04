@@ -72,6 +72,11 @@ plate_or_fps_field/fiberid/mjd/specobjid/run2d/ra/dec/cas_url all confirmed
 live as fully populated (no zero/NaN sentinels) for the legacy (instrument=
 'boss', mjd<58932) subset — cas_url is a ready-made SkyServer object
 explorer deep link, used directly rather than reconstructed.
+
+reduction_status is hardcoded 'reduced' -- the allspec catalog (like every
+SDSS spectro data product) is the pipeline-processed, flux/wavelength-
+calibrated 1D spectrum, never a raw CCD frame; SDSS has no public raw-frame
+distribution path at all.
 """
 
 import gzip
@@ -192,6 +197,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             program_id=run2d,
             ra=clean_float(ra),
             dec=clean_float(dec),
+            reduction_status="reduced",
         )
         for mjd, specobjid, run2d, ra, dec, cas_url in rows
     ]
