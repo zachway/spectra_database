@@ -34,6 +34,8 @@ jobs:
 
       - name: Create test database
         run: |
+          sudo systemctl start postgresql.service
+          pg_isready --timeout=30
           sudo -u postgres psql -c "CREATE ROLE runner WITH LOGIN SUPERUSER PASSWORD 'runner';"
           sudo -u postgres createdb -O runner spectra_test
           PGPASSWORD=runner psql -h localhost -U runner -d spectra_test -f db/schema.sql
