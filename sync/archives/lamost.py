@@ -18,6 +18,11 @@ regardless of ORDER BY (tested with and without — not a sort-cost cliff like
 CFHT/KOA, the API is just generally slow). A full initial sync of 11.57M
 rows would take hours — fine as a one-time server-side pull, paginated here
 at a modest page size to keep each call bounded.
+
+reduction_status is hardcoded 'reduced' -- the spectrum/fits/{obsid} deep
+link serves LAMOST's pipeline-extracted, wavelength-calibrated 1D spectrum
+(the standard LRS public data product), never a raw CCD frame; LAMOST has
+no public raw-frame distribution path.
 """
 
 import requests
@@ -63,6 +68,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="LAMOST",
                 obs_date=Time(int(row["mjd"]), format="mjd").to_datetime().date(),
                 gaia_source_id=int(row["gaia_source_id"]),
+                reduction_status="reduced",
             )
         )
 

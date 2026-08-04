@@ -6,6 +6,11 @@ any null gaiadr3_source_id is just skipped defensively.
 
 Incremental via an mjd watermark: GALAH DR4 is itself a fixed release (not a
 live-growing table), so this mostly matters for re-runs after a future DR.
+
+reduction_status is hardcoded 'reduced' -- mainspectable's slink deep link
+serves GALAH's pipeline-reduced, continuum-normalized, wavelength-
+calibrated 1D spectrum (the standard DR4 public product), never a raw CCD
+frame; GALAH has no public raw-frame distribution path.
 """
 
 import numpy as np
@@ -51,6 +56,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="GALAH (HERMES)",
                 obs_date=Time(mjd, format="mjd").to_datetime().date(),
                 gaia_source_id=int(row["gaiadr3_source_id"]),
+                reduction_status="reduced",
             )
         )
 

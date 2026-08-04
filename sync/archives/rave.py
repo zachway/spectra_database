@@ -5,6 +5,10 @@ pull is enough forever, so the fetch is a no-op once the cursor marks it done.
 ~1030 of 518,387 rows (~0.2%) lack a Gaia match; those are skipped rather than
 falling back to positional matching, not worth the complexity for this small
 a fraction.
+
+reduction_status is hardcoded 'reduced' -- the "III/283/spectra" VizieR
+table serves RAVE's pipeline-reduced, normalized 1D spectrum, the only
+product RAVE ever published; there's no public raw-frame release for it.
 """
 
 import numpy as np
@@ -43,6 +47,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="RAVE",
                 obs_date=obs_date,
                 gaia_source_id=int(row["Gaiae3"]),
+                reduction_status="reduced",
             )
         )
 

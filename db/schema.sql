@@ -131,7 +131,15 @@ CREATE TABLE spectroscopy_holdings (
     -- extracted spectrum, not a raw CCD frame -- BeSS's own FAQ confirms
     -- flux specifically is not calibrated, so this is a coarser call than
     -- the ObsCore-derived archives above, but still not "raw" in this
-    -- column's 2-way sense). Everywhere else stays 'unknown' until a real
+    -- column's 2-way sense), sdss_legacy_optical/sdss_v_optical/
+    -- sdss_v_apogee/lamost/lamost_mrs/desi/galah/rave (all 'reduced' --
+    -- each is a large pipeline-processed survey whose only public product
+    -- is a flux/wavelength-calibrated (or pipeline-combined/coadded) 1D
+    -- spectrum; none of these surveys distributes raw CCD frames at all,
+    -- confirmed live 2026-08-04 against each module's own deep-link/
+    -- reduction-version path), noirlab ('raw' -- its own query hardcodes
+    -- proc_type='raw', so every row it returns is an unreduced exposure by
+    -- construction). Everywhere else stays 'unknown' until a real
     -- per-archive signal is found.
     reduction_status      TEXT NOT NULL DEFAULT 'unknown'
                              CHECK (reduction_status IN ('raw', 'reduced', 'unknown')),

@@ -38,6 +38,11 @@ in fetch() below.
 
 SPEC_FILE gives the exact per-observation filename directly (no need to
 reconstruct it) — confirmed live against the real SAS directory listing.
+
+reduction_status is hardcoded 'reduced' -- spAll-lite is the pipeline-
+reduced, flux/wavelength-calibrated per-visit spectrum (the whole point of
+the "reduction version" v6_2_1 tag above), never a raw CCD frame; SDSS has
+no public raw-frame distribution path at all.
 """
 
 import os
@@ -104,6 +109,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 obs_date=Time(mjd, format="mjd").to_datetime().date(),
                 program_id=row["SURVEY"].strip(),
                 gaia_source_id=int(row["GAIA_ID"]),
+                reduction_status="reduced",
             )
         )
 

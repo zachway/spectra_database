@@ -12,15 +12,20 @@ mostly-static historical archive like ESO/CFHT could be a very long wait.
 Two very different costs here, kept in the same file since both feed the
 same reduction_status column:
 
-- "Cheap" archives (koa, gemini_ghost, gemini_igrins, naoj): the value
-  doesn't depend on re-querying the archive at all -- it's either a
-  hardcoded constant (koa.py's own docstring already establishes every row
-  synced there is raw; gemini_ghost.py/gemini_igrins.py already filter to
-  reduced-only filenames before a record is built) or, for naoj, derivable
-  straight from the archive_url this project already stored (the same
-  filename-infix/extension check naoj.py's _reduction_status does, applied
-  to the stored URL instead of a fresh TAP row). Pure in-database UPDATEs,
-  no network calls, seconds to run.
+- "Cheap" archives (koa, gemini_ghost, gemini_igrins, naoj, noirlab,
+  sdss_legacy_optical, sdss_v_optical, sdss_v_apogee, lamost, lamost_mrs,
+  desi, galah, rave): the value doesn't depend on re-querying the archive
+  at all -- it's either a hardcoded constant (koa.py's own docstring
+  already establishes every row synced there is raw; gemini_ghost.py/
+  gemini_igrins.py already filter to reduced-only filenames before a
+  record is built; noirlab.py's query hardcodes proc_type='raw'; the 8
+  survey modules are each a large pipeline-processed survey whose only
+  public product is a calibrated/coadded 1D spectrum, confirmed live
+  2026-08-04 against each module's own deep-link/reduction-version path)
+  or, for naoj, derivable straight from the archive_url this project
+  already stored (the same filename-infix/extension check naoj.py's
+  _reduction_status does, applied to the stored URL instead of a fresh TAP
+  row). Pure in-database UPDATEs, no network calls, seconds to run.
 
 - "Expensive" archives (mast, mast_jwst, eso, cfht_cadc, dao, gemini,
   oirsa): reduction_status here comes from calib_level, an IVOA ObsCore
@@ -178,6 +183,50 @@ def backfill_gemini_goa(conn: psycopg.Connection) -> None:
 # Same infix list naoj.py's _FITS_INFIX_PRIORITY uses -- any match means at
 # least wavelength-correction was applied (see that module's _reduction_status).
 _NAOJ_FITS_INFIXES = ["1d_nrmwec_fsclmo", "nrmwec_fsclmo", "rmwec_fsclmo"]
+
+
+def backfill_survey_reduced(conn: psycopg.Connection) -> None:
+    """sdss_legacy_optical/sdss_v_optical/sdss_v_apogee/lamost/lamost_mrs/
+    desi/galah/rave: each of these sync modules now hardcodes
+    reduction_status='reduced' on every RawObservation it builds (see each
+    module's own docstring) -- these are large pipeline-processed surveys
+    whose only public product is a calibrated/coadded 1D spectrum, never a
+    raw CCD frame. That only affects rows synced from here on, so this is a
+    single unconditional UPDATE per archive to catch up everything already
+    in production."""
+    archive_codes = (
+        "sdss_legacy_optical",
+        "sdss_v_optical",
+        "sdss_v_apogee",
+        "lamost",
+        "lamost_mrs",
+        "desi",
+        "galah",
+        "rave",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE spectroscopy_holdings SET reduction_status = 'reduced', updated_at = now() "
+            "WHERE archive_code = ANY(%(archive_codes)s) AND reduction_status = 'unknown'",
+            {"archive_codes": list(archive_codes)},
+        )
+        n = cur.rowcount
+    conn.commit()
+    logger.info("%s: %d rows set to 'reduced'", ", ".join(archive_codes), n)
+
+
+def backfill_noirlab(conn: psycopg.Connection) -> None:
+    """noirlab.py's own query hardcodes proc_type='raw', so every row it has
+    ever returned is an unreduced exposure by construction -- no TAP query
+    needed, just an unconditional UPDATE."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE spectroscopy_holdings SET reduction_status = 'raw', updated_at = now() "
+            "WHERE archive_code = 'noirlab' AND reduction_status = 'unknown'"
+        )
+        n = cur.rowcount
+    conn.commit()
+    logger.info("noirlab: %d rows set to 'raw'", n)
 
 
 def backfill_naoj(conn: psycopg.Connection) -> None:
@@ -429,10 +478,22 @@ def backfill_mast_jwst(conn: psycopg.Connection) -> None:
 ARCHIVE_BACKFILLS = {
     # Cheap first. gemini_ghost/gemini_igrins share one function (a single
     # UPDATE covers both archive_codes) -- either key runs the same thing.
+    # Same sharing pattern for the 8 survey archives below (backfill_survey_
+    # reduced) -- requesting any subset of them still runs one UPDATE
+    # covering all 8, which is harmless/idempotent to repeat.
     "koa": backfill_koa,
     "gemini_ghost": backfill_gemini_goa,
     "gemini_igrins": backfill_gemini_goa,
     "naoj": backfill_naoj,
+    "noirlab": backfill_noirlab,
+    "sdss_legacy_optical": backfill_survey_reduced,
+    "sdss_v_optical": backfill_survey_reduced,
+    "sdss_v_apogee": backfill_survey_reduced,
+    "lamost": backfill_survey_reduced,
+    "lamost_mrs": backfill_survey_reduced,
+    "desi": backfill_survey_reduced,
+    "galah": backfill_survey_reduced,
+    "rave": backfill_survey_reduced,
     # Expensive, roughly cheapest-to-slowest.
     "mast_jwst": backfill_mast_jwst,
     "dao": backfill_dao,

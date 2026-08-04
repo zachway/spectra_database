@@ -6,6 +6,11 @@ per-visit, so no obs_date). apstar_id isn't numeric (it's a composite string
 like "apogee.apo1m.stars.Bestars.2M...") so pagination watermarks on
 apogee_id (the 2MASS-style id) instead, which sorts consistently even if not
 chronologically.
+
+reduction_status is hardcoded 'reduced' -- apStar is the pipeline-combined,
+flux/wavelength-calibrated spectrum (redux/dr17 in the URL above names the
+reduction version), never a raw CCD frame; SDSS has no public raw-frame
+distribution path at all.
 """
 
 import requests
@@ -50,6 +55,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 archive_url=SPECTRUM_URL.format(telescope=row["telescope"], field=row["field"], file=row["file"]),
                 instrument="APOGEE",
                 gaia_source_id=int(row["gaiaedr3_source_id"]),
+                reduction_status="reduced",
             )
         )
 

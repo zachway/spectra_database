@@ -31,6 +31,10 @@ are skipped. No per-observation date is available in RVTAB/GAIA without
 also pulling FIBERMAP (another multi-GB extension) — not done, so these
 holdings carry no obs_date, same tradeoff as the other direct-Gaia-column
 archives that lack one.
+
+reduction_status is hardcoded 'reduced' -- SPECTRUM_URL points at
+spectro/redux/iron/.../coadd-*.fits, the pipeline-reduced, coadded spectrum
+(redux/iron names the reduction version), never a raw CCD frame.
 """
 
 import os
@@ -157,6 +161,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ),
                 instrument="DESI",
                 gaia_source_id=source_id,
+                reduction_status="reduced",
             )
         )
 
