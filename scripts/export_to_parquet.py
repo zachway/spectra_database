@@ -278,7 +278,7 @@ ORDER BY s.star_id, g.yr, g.half
 
 
 def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
-    con.execute(f"CREATE OR REPLACE TEMP TABLE leaderboard_counts AS {LEADERBOARD_COUNTS_QUERY}")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE leaderboard_counts AS {_localize(LEADERBOARD_COUNTS_QUERY)}")
 
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE leaderboard_top_period AS
@@ -327,7 +327,7 @@ def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
             [yr, half],
         )
 
-    _atomic_copy(con, LEADERBOARD_FINAL_QUERY, path)
+    _atomic_copy(con, _localize(LEADERBOARD_FINAL_QUERY), path)
 
 # Precomputed "most observed" star list for the CMD page — was a random
 # USING SAMPLE over `stars` (cheap: no join needed), changed to the N
@@ -749,13 +749,13 @@ def _fetch_all(con: duckdb.DuckDBPyConnection, sql: str) -> list[dict]:
 
 def export_stats_summary(con: duckdb.DuckDBPyConnection, out_dir: str) -> None:
     summary = {
-        "total_stars": con.execute("SELECT count(*) FROM pg.stars").fetchone()[0],
-        "total_holdings": con.execute("SELECT count(*) FROM pg.spectroscopy_holdings").fetchone()[0],
+        "total_stars": con.execute(_localize("SELECT count(*) FROM pg.stars")).fetchone()[0],
+        "total_holdings": con.execute(_localize("SELECT count(*) FROM pg.spectroscopy_holdings")).fetchone()[0],
         "needs_review_total": con.execute(
-            "SELECT count(*) FROM pg.spectroscopy_holdings WHERE match_status = 'needs_review'"
+            _localize("SELECT count(*) FROM pg.spectroscopy_holdings WHERE match_status = 'needs_review'")
         ).fetchone()[0],
         "trending_years": TRENDING_YEARS,
-        **{name: _fetch_all(con, sql) for name, sql in STATS_QUERIES.items()},
+        **{name: _fetch_all(con, _localize(sql)) for name, sql in STATS_QUERIES.items()},
     }
     path = os.path.join(out_dir, "stats_summary.json")
     tmp_path = path + ".tmp"
@@ -764,6 +764,41 @@ def export_stats_summary(con: duckdb.DuckDBPyConnection, out_dir: str) -> None:
     os.chmod(tmp_path, 0o644)
     os.rename(tmp_path, path)
     logger.info("exported stats_summary -> %s", path)
+
+
+# Every derived-table query above was written against pg.spectroscopy_holdings
+# /pg.archives/pg.stars/pg.archive_sync_state -- the live Postgres tables --
+# on the reasoning that DuckDB's postgres scanner would push filters down and
+# only pull the rows each query actually needs. Confirmed live that's not
+# what happens for these shapes: DuckDB's postgres extension pushes down
+# simple projections/filters on the base scan, but every GROUP BY, window
+# function, and array_agg here (i.e. nearly all of them) still executes in
+# DuckDB after pulling the (often majority-of-the-table) matching rows across
+# the wire -- so each of the ~15 derived queries independently re-transfers
+# its own large share of a 43M-row, 25GB table from Postgres, on top of
+# Postgres's own execution cost for that scan (confirmed live on the actual
+# prod host: a bare count(*) over spectroscopy_holdings took 165s, a GROUP BY
+# over match_status took 227s -- this host's disk, not query shape, is what
+# makes a single full scan that slow).
+#
+# export_tables() below exports the 4 raw tables from pg.* exactly once, then
+# calls this on every subsequent query string to redirect it at the
+# just-written local Parquet copies instead (local_spectroscopy_holdings/
+# local_archives/local_stars/local_archive_sync_state -- views created right
+# after the TABLES loop). Reading the same rows back from local disk is a
+# DuckDB-native Parquet scan, not a live Postgres query -- a matter of
+# seconds regardless of how many derived tables need their own pass over it.
+# As a side effect this also makes every derived table observe one single,
+# consistent snapshot instead of potentially drifting live state across what
+# used to be a run lasting tens of minutes.
+def _localize(sql: str) -> str:
+    return (
+        sql
+        .replace("pg.spectroscopy_holdings", "local_spectroscopy_holdings")
+        .replace("pg.archives", "local_archives")
+        .replace("pg.stars", "local_stars")
+        .replace("pg.archive_sync_state", "local_archive_sync_state")
+    )
 
 
 def _atomic_copy(con: duckdb.DuckDBPyConnection, select_sql: str, path: str) -> None:
@@ -829,8 +864,18 @@ def export_tables(database_url: str, out_dir: str) -> None:
             _atomic_copy(con, select_sql, path)
             logger.info("exported %s -> %s", table, path)
 
+        # Every query from here on is rewritten by _localize() (see its own
+        # comment) to read these local views over the files just written
+        # above, instead of re-querying live Postgres -- these are exactly
+        # those 4 raw tables, read back off local disk rather than pulled
+        # over the wire again.
+        for table in TABLES:
+            con.execute(
+                f"CREATE VIEW local_{table} AS SELECT * FROM read_parquet('{os.path.join(out_dir, f'{table}.parquet')}')"
+            )
+
         star_name_index_path = os.path.join(out_dir, "star_name_index.parquet")
-        _atomic_copy(con, STAR_NAME_INDEX_QUERY, star_name_index_path)
+        _atomic_copy(con, _localize(STAR_NAME_INDEX_QUERY), star_name_index_path)
         logger.info("exported star_name_index -> %s", star_name_index_path)
 
         leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
@@ -838,55 +883,55 @@ def export_tables(database_url: str, out_dir: str) -> None:
         logger.info("exported leaderboard -> %s", leaderboard_path)
 
         cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
-        _atomic_copy(con, CMD_STARS_QUERY, cmd_stars_path)
+        _atomic_copy(con, _localize(CMD_STARS_QUERY), cmd_stars_path)
         logger.info("exported cmd_stars -> %s", cmd_stars_path)
 
         sky_sample_path = os.path.join(out_dir, "sky_sample.parquet")
-        _atomic_copy(con, SKY_SAMPLE_QUERY, sky_sample_path)
+        _atomic_copy(con, _localize(SKY_SAMPLE_QUERY), sky_sample_path)
         logger.info("exported sky_sample -> %s", sky_sample_path)
 
         archive_status_path = os.path.join(out_dir, "archive_status.parquet")
-        _atomic_copy(con, ARCHIVE_STATUS_QUERY, archive_status_path)
+        _atomic_copy(con, _localize(ARCHIVE_STATUS_QUERY), archive_status_path)
         logger.info("exported archive_status -> %s", archive_status_path)
 
         instruments_path = os.path.join(out_dir, "instruments.parquet")
-        _atomic_copy(con, INSTRUMENTS_QUERY, instruments_path)
+        _atomic_copy(con, _localize(INSTRUMENTS_QUERY), instruments_path)
         logger.info("exported instruments -> %s", instruments_path)
 
         instrument_sky_sample_path = os.path.join(out_dir, "instrument_sky_sample.parquet")
-        _atomic_copy(con, INSTRUMENT_SKY_SAMPLE_QUERY, instrument_sky_sample_path)
+        _atomic_copy(con, _localize(INSTRUMENT_SKY_SAMPLE_QUERY), instrument_sky_sample_path)
         logger.info("exported instrument_sky_sample -> %s", instrument_sky_sample_path)
 
         triage_queue_path = os.path.join(out_dir, "triage_queue.parquet")
-        _atomic_copy(con, TRIAGE_QUEUE_QUERY, triage_queue_path)
+        _atomic_copy(con, _localize(TRIAGE_QUEUE_QUERY), triage_queue_path)
         logger.info("exported triage_queue -> %s", triage_queue_path)
 
         needs_review_path = os.path.join(out_dir, "needs_review.parquet")
-        _atomic_copy(con, NEEDS_REVIEW_QUERY, needs_review_path)
+        _atomic_copy(con, _localize(NEEDS_REVIEW_QUERY), needs_review_path)
         logger.info("exported needs_review -> %s", needs_review_path)
 
         skipped_by_archive_path = os.path.join(out_dir, "skipped_by_archive.parquet")
-        _atomic_copy(con, SKIPPED_BY_ARCHIVE_QUERY, skipped_by_archive_path)
+        _atomic_copy(con, _localize(SKIPPED_BY_ARCHIVE_QUERY), skipped_by_archive_path)
         logger.info("exported skipped_by_archive -> %s", skipped_by_archive_path)
 
         skipped_path = os.path.join(out_dir, "skipped.parquet")
-        _atomic_copy(con, SKIPPED_QUERY, skipped_path)
+        _atomic_copy(con, _localize(SKIPPED_QUERY), skipped_path)
         logger.info("exported skipped -> %s", skipped_path)
 
         archive_overlap_path = os.path.join(out_dir, "archive_overlap.parquet")
-        _atomic_copy(con, ARCHIVE_OVERLAP_QUERY, archive_overlap_path)
+        _atomic_copy(con, _localize(ARCHIVE_OVERLAP_QUERY), archive_overlap_path)
         logger.info("exported archive_overlap -> %s", archive_overlap_path)
 
         archive_overlap_triple_path = os.path.join(out_dir, "archive_overlap_triple.parquet")
-        _atomic_copy(con, ARCHIVE_OVERLAP_TRIPLE_QUERY, archive_overlap_triple_path)
+        _atomic_copy(con, _localize(ARCHIVE_OVERLAP_TRIPLE_QUERY), archive_overlap_triple_path)
         logger.info("exported archive_overlap_triple -> %s", archive_overlap_triple_path)
 
         instrument_overlap_path = os.path.join(out_dir, "instrument_overlap.parquet")
-        _atomic_copy(con, INSTRUMENT_OVERLAP_QUERY, instrument_overlap_path)
+        _atomic_copy(con, _localize(INSTRUMENT_OVERLAP_QUERY), instrument_overlap_path)
         logger.info("exported instrument_overlap -> %s", instrument_overlap_path)
 
         instrument_overlap_triple_path = os.path.join(out_dir, "instrument_overlap_triple.parquet")
-        _atomic_copy(con, INSTRUMENT_OVERLAP_TRIPLE_QUERY, instrument_overlap_triple_path)
+        _atomic_copy(con, _localize(INSTRUMENT_OVERLAP_TRIPLE_QUERY), instrument_overlap_triple_path)
         logger.info("exported instrument_overlap_triple -> %s", instrument_overlap_triple_path)
 
         export_stats_summary(con, out_dir)
