@@ -2,9 +2,10 @@
 
 Idempotent: re-running on a source_id already present just refreshes its
 astrometry. has_rvs (RVS spectrum availability, from the same gaia_source
-row) is stored on `stars` here but the spectroscopy_holdings row for it is
-seeded separately, by sync.archives.gaia_rvs walking this table -- see that
-module for why.
+row) is stored on `stars` here, but the spectroscopy_holdings row for it
+comes from sync.archives.gaia_rvs -- an independent discovery archive in
+its own right (queries Gaia's TAP for has_rvs='true' directly), not derived
+from this module -- see that module for why.
 """
 
 from __future__ import annotations
