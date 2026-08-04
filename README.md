@@ -1,8 +1,8 @@
 # Spectra Database
 
 A cross-match database and search tool that unifies stellar spectroscopy
-holdings across dozens of independent astronomical archives (ESO, SDSS,
-Gaia, LAMOST, Keck/KOA, Gemini, and more) behind a single Gaia-source-ID
+holdings across more than 30 independent astronomical archives (ESO, SDSS,
+Gaia, LAMOST, Keck/KOA, Gemini, and more) behind a single [Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3) `source_id`
 lookup.
 
 ## Statement of need
@@ -10,27 +10,27 @@ lookup.
 Ground- and space-based spectroscopic surveys and archives each publish
 their own holdings under their own conventions — different identifier
 schemes, different metadata fields, different levels of positional
-precision, some with public TAP/VO services and some without. A researcher
-who wants to know "has this star been observed spectroscopically, and
-where can I get the data?" currently has to query each archive
-individually and reconcile the results by hand.
+precision, some with public TAP/VO services and some without. As more 
+spectroscopic data is observed, it becomes intractable for an
+individual researcher to find out if a particular star has been observed.
+This information is necessary for creating novel research, combing
+through archival data, and writing proposals for time on large 
+telescopes with limited budgets.
 
 Spectra Database solves this by running an independent sync process per
 archive (39 are currently implemented) that discovers spectroscopic
-observations and cross-matches each one to a canonical Gaia DR3 star
-record — first by identifier when the archive publishes one, falling back
-to positional matching (via PostgreSQL's q3c extension) when it doesn't.
-The result is a single Postgres table (`spectroscopy_holdings`) that a
+observations and cross-matches each one to a canonical Gaia DR3 `source_id` 
+— first by a named identifier when the archive publishes one (via
+the [SIMBAD database](https://simbad.cds.unistra.fr/simbad/), falling back
+to positional matching (via a [PostgreSQL q3c extension](https://github.com/segasai/q3c)) 
+when it doesn't. The result is a single Postgres table (`spectroscopy_holdings`) that a
 researcher can query by Gaia `source_id` or common name to get a
 consolidated, deduplicated list of every archive holding a spectrum of
 that star, along with pointers back to the original data in each home
 archive. A public search webapp (built on this database) is deployed at
-<https://spectra-database-997472993697.us-central1.run.app>.
-
-This is intended as reusable infrastructure for other researchers or
-survey teams who want to build target lists, check archival coverage
-before proposing new observations, or study systematic differences in
-archive metadata quality — not a one-off personal tool.
+<https://spectra-database-997472993697.us-central1.run.app>. This is 
+software is developed to be reusable infrastructure for anybody,
+using no proprietary access and minimal personal keys.
 
 ## Architecture
 
@@ -42,11 +42,15 @@ scripts/export_to_parquet.py   snapshots Postgres to a static Parquet dataset
 webapp/app.py           read-only search UI, queries the Parquet snapshot via DuckDB
 ```
 
-The sync layer never talks to the public web tier directly: `sync/main.py`
+Purposefully, the sync layer never talks to the public web tier directly: `sync/main.py`
 and `ingest/add_star.py` write to Postgres, `scripts/export_to_parquet.py`
 periodically snapshots that database to Parquet, and `webapp/app.py` serves
 search results from the snapshot (locally or over HTTP), so the public
-webapp never holds live database credentials.
+webapp never holds live database credentials. This architecture synchronizes
+well with Georgia State University's network, which has much storage
+but cannot handle many requests. The Parquet snapshots also allow users
+to effectively download the database directly, should they want to run
+more complicated queries.
 
 ## Installation
 
