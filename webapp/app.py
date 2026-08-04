@@ -2388,21 +2388,32 @@ def batch_search():
     holdings_counts: dict[int, int] = {}
     if all_source_ids:
         cur = get_cursor()
+        # A literal IN (?, ?, ...) list, not list_contains(?, gaia_source_id)
+        # -- gaia_source_id is bare on one side of a real comparison operator
+        # this way, so DuckDB's Parquet row-group min/max pruning can still
+        # apply (stars.parquet is exported sorted by gaia_source_id
+        # specifically for this). Wrapping the column inside a function call
+        # like list_contains() hides it from that pruning entirely -- the
+        # same failure mode already diagnosed and fixed once for
+        # STAR_NAME_INDEX_QUERY's normalize()-wrapped filter; confirmed live
+        # here too (a 50-id lookup ran ~19x slower via list_contains than the
+        # IN-list equivalent against the real stars.parquet).
+        id_placeholders = ", ".join("?" for _ in all_source_ids)
         cur.execute(
-            "SELECT gaia_source_id, name_aliases, input_name FROM stars WHERE list_contains(?, gaia_source_id)",
-            [all_source_ids],
+            f"SELECT gaia_source_id, name_aliases, input_name FROM stars WHERE gaia_source_id IN ({id_placeholders})",
+            all_source_ids,
         )
         tracked = {row["gaia_source_id"]: row for row in _rows_as_dicts(cur)}
 
         cur.execute(
-            """
+            f"""
             SELECT s.gaia_source_id, COUNT(*) AS n
             FROM spectroscopy_holdings h
             JOIN stars s ON s.star_id = h.star_id
-            WHERE list_contains(?, s.gaia_source_id)
+            WHERE s.gaia_source_id IN ({id_placeholders})
             GROUP BY s.gaia_source_id
             """,
-            [all_source_ids],
+            all_source_ids,
         )
         holdings_counts = {row["gaia_source_id"]: row["n"] for row in _rows_as_dicts(cur)}
 
@@ -2439,16 +2450,16 @@ def batch_search():
         holdings_by_source_id: dict[int, list[dict]] = {}
         if all_source_ids:
             cur.execute(
-                """
+                f"""
                 SELECT s.gaia_source_id, a.display_name, h.instrument, h.obs_date,
                        h.match_status, h.match_method, h.reduction_status, h.archive_url
                 FROM spectroscopy_holdings h
                 JOIN stars s ON s.star_id = h.star_id
                 JOIN archives a ON a.archive_code = h.archive_code
-                WHERE list_contains(?, s.gaia_source_id)
+                WHERE s.gaia_source_id IN ({id_placeholders})
                 ORDER BY s.gaia_source_id, a.display_name, h.instrument, h.obs_date
                 """,
-                [all_source_ids],
+                all_source_ids,
             )
             for row in _rows_as_dicts(cur):
                 holdings_by_source_id.setdefault(row["gaia_source_id"], []).append(row)
