@@ -264,6 +264,7 @@ grid AS (
 SELECT
     s.star_id,
     s.gaia_source_id,
+    s.bsc_hr_number,
     COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS label,
     g.yr, g.half,
     tp.n AS within_n,

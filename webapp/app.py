@@ -1089,7 +1089,7 @@ def timeplots():
     # top-5 selection here in Python, which meant sorted() over the full
     # (multi-million-star) population once per period — confirmed live as
     # what was actually OOMing the Cloud Run container, not the raw GROUP BY.
-    cur.execute("SELECT star_id, gaia_source_id, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY star_id, yr, half")
+    cur.execute("SELECT star_id, gaia_source_id, bsc_hr_number, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY star_id, yr, half")
     rows = _rows_as_dicts(cur)
 
     period_labels: list[str] = []
@@ -1112,10 +1112,12 @@ def timeplots():
         by_star: dict[int, dict] = defaultdict(dict)
         labels_by_id: dict[int, str] = {}
         gaia_id_by_star: dict[int, int | None] = {}
+        bsc_hr_by_star: dict[int, int | None] = {}
         for r in rows:
             by_star[r["star_id"]][(r["yr"], r["half"])] = r
             labels_by_id[r["star_id"]] = r["label"]
             gaia_id_by_star[r["star_id"]] = r["gaia_source_id"]
+            bsc_hr_by_star[r["star_id"]] = r["bsc_hr_number"]
 
         for sid in sorted(by_star):
             by_period = by_star[sid]
@@ -1123,12 +1125,14 @@ def timeplots():
             # safe-integer range — serialized as a string so a click-through
             # can't get silently rounded by the browser (same issue fixed
             # for the CMD/Sky Map click-throughs). BSC5 stars have no
-            # gaia_source_id at all, so their click-through source_id is the
-            # literal string "None" -- same (already-existing) fallback
-            # cmd_stars/sky_sample use, not a new gap: clicking shows "no
-            # tracked star" rather than resolving, since there's no
-            # search-by-star_id or search-by-HR-number path yet.
-            source_id = str(gaia_id_by_star[sid])
+            # gaia_source_id at all, so their click-through source_id falls
+            # back to bsc_hr_number -- the same fallback the "Most observed"/
+            # "Trending"/"Nearest"/"Fastest movers" tables and the `/` search
+            # route itself (star_search_id) already use -- rather than
+            # str(None), which used to send the click-through to a literal
+            # "/?q=None" search.
+            gaia_id = gaia_id_by_star[sid]
+            source_id = str(gaia_id) if gaia_id is not None else str(bsc_hr_by_star[sid])
             cumulative_traces.append(
                 {
                     "label": labels_by_id[sid],
