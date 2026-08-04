@@ -17,7 +17,13 @@ jobs:
       - name: Install PostgreSQL and build q3c
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql postgresql-server-dev-all build-essential git
+          sudo apt-get install -y postgresql build-essential git
+          # postgresql-server-dev-all pulls in a postgresql-common version
+          # that conflicts with the PGDG-repo postgresql-common GitHub's
+          # runner images preinstall -- install the server-dev package for
+          # whichever major version 'postgresql' actually resolved to instead.
+          PG_MAJOR=$(psql --version | awk '{print $3}' | cut -d. -f1)
+          sudo apt-get install -y "postgresql-server-dev-${PG_MAJOR}"
           git clone --depth 1 https://github.com/segasai/q3c.git /tmp/q3c
           make -C /tmp/q3c
           sudo make -C /tmp/q3c install
