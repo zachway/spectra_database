@@ -46,4 +46,4 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgresql://runner:runner@localhost/spectra_test
-        run: pytest tests/ -v
+        run: python -m pytest tests/ -v
