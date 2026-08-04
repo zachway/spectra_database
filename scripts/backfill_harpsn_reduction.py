@@ -172,11 +172,17 @@ def build_product_index(tap) -> dict[str, str]:
     return {ts: url for ts, (_, url) in best.items()}
 
 
-def upgrade_rows(conn: psycopg.Connection, index: dict[str, str]) -> None:
+def upgrade_rows(read_conn: psycopg.Connection, write_conn: psycopg.Connection, index: dict[str, str]) -> None:
+    """Reads via a named (server-side) cursor on read_conn and writes/commits
+    on a separate write_conn -- a named cursor is transaction-scoped by
+    default in Postgres, so committing on the same connection that holds it
+    implicitly closes it (confirmed live: InvalidCursorName on the second
+    fetchmany after the first batch's commit). Two connections sidesteps that
+    entirely rather than relying on a WITH HOLD cursor."""
     batch_size = 5000
     total_reduced = 0
     total_raw = 0
-    with conn.cursor(name="harpsn_unknown_rows") as read_cur:
+    with read_conn.cursor(name="harpsn_unknown_rows") as read_cur:
         read_cur.execute(
             "SELECT archive_obs_id, archive_url FROM spectroscopy_holdings "
             "WHERE archive_code = 'harpsn_tng' AND reduction_status = 'unknown'"
@@ -198,7 +204,7 @@ def upgrade_rows(conn: psycopg.Connection, index: dict[str, str]) -> None:
                     urls.append(archive_url)
                     statuses.append("raw")
                     total_raw += 1
-            with conn.cursor() as write_cur:
+            with write_conn.cursor() as write_cur:
                 write_cur.execute(
                     """
                     UPDATE spectroscopy_holdings h
@@ -213,7 +219,7 @@ def upgrade_rows(conn: psycopg.Connection, index: dict[str, str]) -> None:
                     """,
                     {"obs_ids": obs_ids, "urls": urls, "statuses": statuses},
                 )
-            conn.commit()
+            write_conn.commit()
             logger.info("upgrade: %d rows processed so far (%d -> reduced, %d -> raw)", total_reduced + total_raw, total_reduced, total_raw)
     logger.info("done: %d rows upgraded to reduced, %d rows confirmed raw-only", total_reduced, total_raw)
 
@@ -224,8 +230,8 @@ def main() -> None:
     index = build_product_index(tap)
     logger.info("index built: %d exposures have a preferred reduced product", len(index))
 
-    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        upgrade_rows(conn, index)
+    with psycopg.connect(os.environ["DATABASE_URL"]) as read_conn, psycopg.connect(os.environ["DATABASE_URL"]) as write_conn:
+        upgrade_rows(read_conn, write_conn, index)
 
 
 if __name__ == "__main__":
