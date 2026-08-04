@@ -72,6 +72,7 @@ DATA_TABLES = (
     "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
     "sky_sample", "triage_queue", "star_name_index",
     "archive_overlap", "archive_overlap_triple", "instrument_overlap", "instrument_overlap_triple",
+    "needs_review", "skipped_by_archive", "skipped",
 )
 
 
@@ -2287,34 +2288,30 @@ def citation():
 
 @app.route("/info")
 def info():
+    # needs_review/skipped_by_archive/skipped (and needs_review_total, in
+    # stats_summary) are precomputed by scripts.export_to_parquet -- this
+    # route used to run these as four separate live queries against
+    # spectroscopy_holdings (a 1GB+ remote Parquet file) on every request,
+    # the same slow-page shape already fixed for /sky, /timeplots, and
+    # /triage. See export_to_parquet's NEEDS_REVIEW_QUERY/SKIPPED_QUERY for
+    # the full reasoning.
     cur = get_cursor()
-    cur.execute("SELECT count(*) FROM spectroscopy_holdings WHERE match_status = 'needs_review'")
+    cur.execute("SELECT needs_review_total FROM stats_summary")
     needs_review_total = cur.fetchone()[0]
 
     cur.execute(
-        """
-        SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.theta_arcsec, h.reduction_status
-        FROM spectroscopy_holdings h
-        JOIN archives a ON a.archive_code = h.archive_code
-        WHERE h.match_status = 'needs_review'
-        ORDER BY h.updated_at DESC
-        LIMIT 20
-        """
+        "SELECT display_name, raw_target_name, raw_ra, raw_dec, obs_date, theta_arcsec, reduction_status "
+        "FROM needs_review"
     )
     needs_review = _rows_as_dicts(cur)
 
-    cur.execute(
-        """
-        SELECT h.archive_code, a.display_name, count(*) AS n
-        FROM spectroscopy_holdings h
-        JOIN archives a ON a.archive_code = h.archive_code
-        WHERE h.match_status = 'skipped'
-        GROUP BY h.archive_code, a.display_name
-        ORDER BY n DESC
-        """
-    )
+    cur.execute("SELECT archive_code, display_name, n FROM skipped_by_archive ORDER BY n DESC")
     skipped_by_archive = _rows_as_dicts(cur)
 
+    # The per-archive filter is a rare, deliberate user action (not the
+    # default page load), and cheap once narrowed to one archive_code -- kept
+    # as a live query rather than precomputing one skipped-records table per
+    # archive_code up front.
     archive_filter = request.args.get("archive", "").strip()
     if archive_filter:
         cur.execute(
@@ -2328,18 +2325,12 @@ def info():
             """,
             [archive_filter],
         )
+        skipped = _rows_as_dicts(cur)
     else:
         cur.execute(
-            """
-            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.reduction_status
-            FROM spectroscopy_holdings h
-            JOIN archives a ON a.archive_code = h.archive_code
-            WHERE h.match_status = 'skipped'
-            ORDER BY h.updated_at DESC
-            LIMIT 20
-            """
+            "SELECT display_name, raw_target_name, raw_ra, raw_dec, obs_date, reduction_status FROM skipped"
         )
-    skipped = _rows_as_dicts(cur)
+        skipped = _rows_as_dicts(cur)
 
     return render_template_string(
         INFO_TEMPLATE, active_tab="info",
@@ -2397,21 +2388,32 @@ def batch_search():
     holdings_counts: dict[int, int] = {}
     if all_source_ids:
         cur = get_cursor()
+        # A literal IN (?, ?, ...) list, not list_contains(?, gaia_source_id)
+        # -- gaia_source_id is bare on one side of a real comparison operator
+        # this way, so DuckDB's Parquet row-group min/max pruning can still
+        # apply (stars.parquet is exported sorted by gaia_source_id
+        # specifically for this). Wrapping the column inside a function call
+        # like list_contains() hides it from that pruning entirely -- the
+        # same failure mode already diagnosed and fixed once for
+        # STAR_NAME_INDEX_QUERY's normalize()-wrapped filter; confirmed live
+        # here too (a 50-id lookup ran ~19x slower via list_contains than the
+        # IN-list equivalent against the real stars.parquet).
+        id_placeholders = ", ".join("?" for _ in all_source_ids)
         cur.execute(
-            "SELECT gaia_source_id, name_aliases, input_name FROM stars WHERE list_contains(?, gaia_source_id)",
-            [all_source_ids],
+            f"SELECT gaia_source_id, name_aliases, input_name FROM stars WHERE gaia_source_id IN ({id_placeholders})",
+            all_source_ids,
         )
         tracked = {row["gaia_source_id"]: row for row in _rows_as_dicts(cur)}
 
         cur.execute(
-            """
+            f"""
             SELECT s.gaia_source_id, COUNT(*) AS n
             FROM spectroscopy_holdings h
             JOIN stars s ON s.star_id = h.star_id
-            WHERE list_contains(?, s.gaia_source_id)
+            WHERE s.gaia_source_id IN ({id_placeholders})
             GROUP BY s.gaia_source_id
             """,
-            [all_source_ids],
+            all_source_ids,
         )
         holdings_counts = {row["gaia_source_id"]: row["n"] for row in _rows_as_dicts(cur)}
 
@@ -2448,16 +2450,16 @@ def batch_search():
         holdings_by_source_id: dict[int, list[dict]] = {}
         if all_source_ids:
             cur.execute(
-                """
+                f"""
                 SELECT s.gaia_source_id, a.display_name, h.instrument, h.obs_date,
                        h.match_status, h.match_method, h.reduction_status, h.archive_url
                 FROM spectroscopy_holdings h
                 JOIN stars s ON s.star_id = h.star_id
                 JOIN archives a ON a.archive_code = h.archive_code
-                WHERE list_contains(?, s.gaia_source_id)
+                WHERE s.gaia_source_id IN ({id_placeholders})
                 ORDER BY s.gaia_source_id, a.display_name, h.instrument, h.obs_date
                 """,
-                [all_source_ids],
+                all_source_ids,
             )
             for row in _rows_as_dicts(cur):
                 holdings_by_source_id.setdefault(row["gaia_source_id"], []).append(row)
