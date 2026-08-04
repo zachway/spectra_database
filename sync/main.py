@@ -43,6 +43,7 @@ from sync.archives import (
     eso,
     feros_gavo,
     flashheros_gavo,
+    gaia_rvs,
     galah,
     gemini,
     gemini_ghost,
@@ -109,6 +110,7 @@ ARCHIVES = {
     "gtc": gtc.fetch,
     "hermes_mercator": hermes_mercator.fetch,
     "bess": bess.fetch,
+    "gaia_rvs": gaia_rvs.fetch,
 }
 
 

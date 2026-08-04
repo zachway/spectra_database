@@ -1,9 +1,10 @@
 """Register a star (by Gaia DR3 source_id) into the tracking database.
 
 Idempotent: re-running on a source_id already present just refreshes its
-astrometry. Also seeds the Gaia RVS holding in the same call, since RVS
-availability (has_rvs) comes back on the same gaia_source row — no separate
-archive sync needed for that one.
+astrometry. has_rvs (RVS spectrum availability, from the same gaia_source
+row) is stored on `stars` here but the spectroscopy_holdings row for it is
+seeded separately, by sync.archives.gaia_rvs walking this table -- see that
+module for why.
 """
 
 from __future__ import annotations
@@ -75,12 +76,6 @@ WHERE 1=CONTAINS(
     CIRCLE('ICRS', {ra}, {dec}, {radius_deg})
 )
 """
-
-# Gaia archive Datalink endpoint for retrieving an individual source's RVS spectrum.
-RVS_DEEP_LINK = (
-    "https://gea.esac.esa.int/data-server/data"
-    "?RETRIEVAL_TYPE=RVS&ID=Gaia+DR3+{source_id}&DATA_STRUCTURE=INDIVIDUAL"
-)
 
 GAIA_LAUNCH_JOB_ATTEMPTS = 5
 GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
@@ -218,23 +213,6 @@ def add_star(conn: psycopg.Connection, gaia_source_id: int, input_name: str | No
             star,
         )
         star["star_id"] = cur.fetchone()[0]
-
-        if star["has_rvs"]:
-            cur.execute(
-                """
-                INSERT INTO spectroscopy_holdings
-                    (star_id, archive_code, archive_obs_id, archive_url,
-                     instrument, match_method, match_status)
-                VALUES (%(star_id)s, 'gaia_rvs', %(archive_obs_id)s, %(archive_url)s,
-                        'Gaia RVS', 'direct_gaia_column', 'matched')
-                ON CONFLICT (archive_code, archive_obs_id) DO NOTHING
-                """,
-                {
-                    "star_id": star["star_id"],
-                    "archive_obs_id": str(star["gaia_source_id"]),
-                    "archive_url": RVS_DEEP_LINK.format(source_id=star["gaia_source_id"]),
-                },
-            )
 
     conn.commit()
     return star
@@ -460,27 +438,9 @@ def add_stars_batch(
                                 || COALESCE(EXCLUDED.name_aliases, ARRAY[]::TEXT[])
                             )
                         )
-                    RETURNING star_id
                     """,
                     star,
                 )
-                star_id = cur.fetchone()[0]
-                if star["has_rvs"]:
-                    cur.execute(
-                        """
-                        INSERT INTO spectroscopy_holdings
-                            (star_id, archive_code, archive_obs_id, archive_url,
-                             instrument, match_method, match_status)
-                        VALUES (%(star_id)s, 'gaia_rvs', %(archive_obs_id)s, %(archive_url)s,
-                                'Gaia RVS', 'direct_gaia_column', 'matched')
-                        ON CONFLICT (archive_code, archive_obs_id) DO NOTHING
-                        """,
-                        {
-                            "star_id": star_id,
-                            "archive_obs_id": str(star["gaia_source_id"]),
-                            "archive_url": RVS_DEEP_LINK.format(source_id=star["gaia_source_id"]),
-                        },
-                    )
                 total += 1
         conn.commit()
 
