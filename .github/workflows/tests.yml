@@ -24,6 +24,10 @@ jobs:
           # whichever major version 'postgresql' actually resolved to instead.
           PG_MAJOR=$(psql --version | awk '{print $3}' | cut -d. -f1)
           sudo apt-get install -y "postgresql-server-dev-${PG_MAJOR}"
+          # PGXS also wants the exact clang the installed Postgres was built
+          # with (for the JIT bitcode side-build) -- without it, `make` fails
+          # on dump.bc with "clang-19: No such file or directory".
+          sudo apt-get install -y clang-19 || sudo apt-get install -y clang
           git clone --depth 1 https://github.com/segasai/q3c.git /tmp/q3c
           make -C /tmp/q3c
           sudo make -C /tmp/q3c install
