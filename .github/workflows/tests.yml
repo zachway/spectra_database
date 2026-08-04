@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PostgreSQL and build q3c
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-server-dev-all build-essential git
+          git clone --depth 1 https://github.com/segasai/q3c.git /tmp/q3c
+          make -C /tmp/q3c
+          sudo make -C /tmp/q3c install
+
+      - name: Create test database
+        run: |
+          sudo -u postgres psql -c "CREATE ROLE runner WITH LOGIN SUPERUSER PASSWORD 'runner';"
+          sudo -u postgres createdb -O runner spectra_test
+          PGPASSWORD=runner psql -h localhost -U runner -d spectra_test -f db/schema.sql
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://runner:runner@localhost/spectra_test
+        run: pytest tests/ -v
