@@ -386,23 +386,23 @@ FASTEST_MOVERS_TOP_N = 20
 
 STATS_QUERIES = {
     "most_observed": f"""
-        SELECT s.gaia_source_id,
+        SELECT s.gaia_source_id, s.bsc_hr_number,
                COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS known_as,
                count(*) AS n
         FROM pg.spectroscopy_holdings h
         JOIN pg.stars s ON s.star_id = h.star_id
-        GROUP BY s.star_id, s.gaia_source_id, s.name_aliases, s.input_name
+        GROUP BY s.star_id, s.gaia_source_id, s.bsc_hr_number, s.name_aliases, s.input_name
         ORDER BY n DESC
         LIMIT {MOST_OBSERVED_TOP_N}
     """,
     "trending": f"""
-        SELECT s.gaia_source_id,
+        SELECT s.gaia_source_id, s.bsc_hr_number,
                COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS known_as,
                count(*) AS n
         FROM pg.spectroscopy_holdings h
         JOIN pg.stars s ON s.star_id = h.star_id
         WHERE h.obs_date >= CURRENT_DATE - INTERVAL '{TRENDING_YEARS}' YEAR
-        GROUP BY s.star_id, s.gaia_source_id, s.name_aliases, s.input_name
+        GROUP BY s.star_id, s.gaia_source_id, s.bsc_hr_number, s.name_aliases, s.input_name
         ORDER BY n DESC
         LIMIT {TRENDING_TOP_N}
     """,
@@ -421,7 +421,7 @@ STATS_QUERIES = {
         ORDER BY n DESC
     """,
     "nearest": f"""
-        SELECT gaia_source_id,
+        SELECT gaia_source_id, bsc_hr_number,
                COALESCE(name_aliases[1], input_name, CAST(gaia_source_id AS VARCHAR)) AS known_as,
                1000.0 / parallax AS distance_pc
         FROM pg.stars
@@ -430,7 +430,7 @@ STATS_QUERIES = {
         LIMIT {NEAREST_TOP_N}
     """,
     "fastest_movers": f"""
-        SELECT gaia_source_id,
+        SELECT gaia_source_id, bsc_hr_number,
                COALESCE(name_aliases[1], input_name, CAST(gaia_source_id AS VARCHAR)) AS known_as,
                sqrt(pmra * pmra + pmdec * pmdec) AS total_pm
         FROM pg.stars

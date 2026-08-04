@@ -1011,7 +1011,7 @@ TIMEPLOTS_TEMPLATE = """
   <table>
     <tr><th>Star</th><th>Observations</th></tr>
     {% for r in most_observed %}
-    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
+    <tr><td><a href="/?q={{ r.gaia_source_id if r.gaia_source_id is not none else r.bsc_hr_number }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
     {% endfor %}
   </table>
 
@@ -1020,7 +1020,7 @@ TIMEPLOTS_TEMPLATE = """
     <table>
       <tr><th>Star</th><th>Observations</th></tr>
       {% for r in trending %}
-      <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
+      <tr><td><a href="/?q={{ r.gaia_source_id if r.gaia_source_id is not none else r.bsc_hr_number }}">{{ r.known_as }}</a></td><td>{{ r.n }}</td></tr>
       {% endfor %}
     </table>
   {% else %}
@@ -1048,7 +1048,7 @@ TIMEPLOTS_TEMPLATE = """
   <table>
     <tr><th>Star</th><th>Distance (pc)</th></tr>
     {% for r in nearest %}
-    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.2f"|format(r.distance_pc) }}</td></tr>
+    <tr><td><a href="/?q={{ r.gaia_source_id if r.gaia_source_id is not none else r.bsc_hr_number }}">{{ r.known_as }}</a></td><td>{{ "%.2f"|format(r.distance_pc) }}</td></tr>
     {% endfor %}
   </table>
 
@@ -1057,7 +1057,7 @@ TIMEPLOTS_TEMPLATE = """
   <table>
     <tr><th>Star</th><th>Proper motion (mas/yr)</th></tr>
     {% for r in fastest_movers %}
-    <tr><td><a href="/?q={{ r.gaia_source_id }}">{{ r.known_as }}</a></td><td>{{ "%.1f"|format(r.total_pm) }}</td></tr>
+    <tr><td><a href="/?q={{ r.gaia_source_id if r.gaia_source_id is not none else r.bsc_hr_number }}">{{ r.known_as }}</a></td><td>{{ "%.1f"|format(r.total_pm) }}</td></tr>
     {% endfor %}
   </table>
 
