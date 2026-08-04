@@ -72,6 +72,7 @@ DATA_TABLES = (
     "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
     "sky_sample", "triage_queue", "star_name_index",
     "archive_overlap", "archive_overlap_triple", "instrument_overlap", "instrument_overlap_triple",
+    "needs_review", "skipped_by_archive", "skipped",
 )
 
 
@@ -2287,34 +2288,30 @@ def citation():
 
 @app.route("/info")
 def info():
+    # needs_review/skipped_by_archive/skipped (and needs_review_total, in
+    # stats_summary) are precomputed by scripts.export_to_parquet -- this
+    # route used to run these as four separate live queries against
+    # spectroscopy_holdings (a 1GB+ remote Parquet file) on every request,
+    # the same slow-page shape already fixed for /sky, /timeplots, and
+    # /triage. See export_to_parquet's NEEDS_REVIEW_QUERY/SKIPPED_QUERY for
+    # the full reasoning.
     cur = get_cursor()
-    cur.execute("SELECT count(*) FROM spectroscopy_holdings WHERE match_status = 'needs_review'")
+    cur.execute("SELECT needs_review_total FROM stats_summary")
     needs_review_total = cur.fetchone()[0]
 
     cur.execute(
-        """
-        SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.theta_arcsec, h.reduction_status
-        FROM spectroscopy_holdings h
-        JOIN archives a ON a.archive_code = h.archive_code
-        WHERE h.match_status = 'needs_review'
-        ORDER BY h.updated_at DESC
-        LIMIT 20
-        """
+        "SELECT display_name, raw_target_name, raw_ra, raw_dec, obs_date, theta_arcsec, reduction_status "
+        "FROM needs_review"
     )
     needs_review = _rows_as_dicts(cur)
 
-    cur.execute(
-        """
-        SELECT h.archive_code, a.display_name, count(*) AS n
-        FROM spectroscopy_holdings h
-        JOIN archives a ON a.archive_code = h.archive_code
-        WHERE h.match_status = 'skipped'
-        GROUP BY h.archive_code, a.display_name
-        ORDER BY n DESC
-        """
-    )
+    cur.execute("SELECT archive_code, display_name, n FROM skipped_by_archive ORDER BY n DESC")
     skipped_by_archive = _rows_as_dicts(cur)
 
+    # The per-archive filter is a rare, deliberate user action (not the
+    # default page load), and cheap once narrowed to one archive_code -- kept
+    # as a live query rather than precomputing one skipped-records table per
+    # archive_code up front.
     archive_filter = request.args.get("archive", "").strip()
     if archive_filter:
         cur.execute(
@@ -2328,18 +2325,12 @@ def info():
             """,
             [archive_filter],
         )
+        skipped = _rows_as_dicts(cur)
     else:
         cur.execute(
-            """
-            SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.reduction_status
-            FROM spectroscopy_holdings h
-            JOIN archives a ON a.archive_code = h.archive_code
-            WHERE h.match_status = 'skipped'
-            ORDER BY h.updated_at DESC
-            LIMIT 20
-            """
+            "SELECT display_name, raw_target_name, raw_ra, raw_dec, obs_date, reduction_status FROM skipped"
         )
-    skipped = _rows_as_dicts(cur)
+        skipped = _rows_as_dicts(cur)
 
     return render_template_string(
         INFO_TEMPLATE, active_tab="info",

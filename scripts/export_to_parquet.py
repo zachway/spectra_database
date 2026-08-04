@@ -457,6 +457,50 @@ STATS_QUERIES = {
 }
 
 
+# Precomputed for the More Info page's needs-review/skipped sections -- these
+# used to run four separate live queries against spectroscopy_holdings on
+# every /info request (a count(), two JOIN+ORDER BY updated_at DESC LIMIT 20,
+# and a GROUP BY), each one a fresh full scan of the 1GB+ remote Parquet file
+# over HTTP. Individually a couple hundred ms to ~1s each from a fast
+# connection, but confirmed this is the slow-page complaint in practice
+# (Cloud Run's connection to joy is neither fast nor consistent, and it's the
+# same live-query-over-the-full-holdings-table shape already fixed for /sky,
+# /timeplots, and /triage elsewhere in this module -- /info was just missed
+# in that pass). NEEDS_REVIEW_QUERY/SKIPPED_QUERY only cover the unfiltered
+# default view; /info's per-archive filter (?archive=...) is rare enough,
+# and cheap enough once narrowed to one archive_code, to stay a live query in
+# webapp.app.
+NEEDS_REVIEW_TOP_N = 20
+SKIPPED_TOP_N = 20
+
+NEEDS_REVIEW_QUERY = f"""
+SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.theta_arcsec, h.reduction_status
+FROM pg.spectroscopy_holdings h
+JOIN pg.archives a ON a.archive_code = h.archive_code
+WHERE h.match_status = 'needs_review'
+ORDER BY h.updated_at DESC
+LIMIT {NEEDS_REVIEW_TOP_N}
+"""
+
+SKIPPED_BY_ARCHIVE_QUERY = """
+SELECT h.archive_code, a.display_name, count(*) AS n
+FROM pg.spectroscopy_holdings h
+JOIN pg.archives a ON a.archive_code = h.archive_code
+WHERE h.match_status = 'skipped'
+GROUP BY h.archive_code, a.display_name
+ORDER BY n DESC
+"""
+
+SKIPPED_QUERY = f"""
+SELECT a.display_name, h.raw_target_name, h.raw_ra, h.raw_dec, h.obs_date, h.reduction_status
+FROM pg.spectroscopy_holdings h
+JOIN pg.archives a ON a.archive_code = h.archive_code
+WHERE h.match_status = 'skipped'
+ORDER BY h.updated_at DESC
+LIMIT {SKIPPED_TOP_N}
+"""
+
+
 # Precomputed per-(archive, reported target name) triage queue -- the
 # /triage page used to run this grouping live against the hosted
 # DuckDB/Parquet snapshot, but a true GROUP BY (archive_code, raw_target_name)
@@ -581,9 +625,14 @@ LIMIT {TRIAGE_QUEUE_TOP_N}
 # per-circle totals come from this same query instead of a separate one.
 # The GROUP BY also means a combo that never co-occurs for any star simply
 # has no output row at all (implicit zero) rather than an explicit zero row
-# -- both tables stay small (low hundreds of archive rows; instrument pairs
-# are a bit more, bounded by how many distinct instruments ever share an
-# observer, still nowhere near a full N^2/N^3 of all possible combos).
+# -- archive_overlap(_triple) stays small on its own (low hundreds of rows,
+# bounded by the handful of archive codes that exist). Instrument overlap
+# needed an explicit cap instead: confirmed live that ~450+ distinct
+# instrument names made instrument_overlap_triple balloon to ~6.8M rows (not
+# "nowhere near N^3" as originally assumed here) -- webapp.app's /instruments
+# route pulls every row into Python dicts and JSON-serializes them straight
+# into the page, which OOM'd/timed out the Cloud Run container. See
+# INSTRUMENT_OVERLAP_TOP_N below.
 ARCHIVE_OVERLAP_QUERY = """
 WITH per_star AS (
     SELECT star_id, array_agg(DISTINCT archive_code) AS codes
@@ -632,11 +681,37 @@ ORDER BY 1, 2, 3
 # stars" is a finer-grained, separate question from "which archives share
 # stars". instrument is nullable (not every archive reports one), filtered
 # out here the same way INSTRUMENTS_QUERY does.
-INSTRUMENT_OVERLAP_QUERY = """
-WITH per_star AS (
+#
+# Restricted to the top INSTRUMENT_OVERLAP_TOP_N instruments by matched-holding
+# count -- unlike archive_code (a few dozen values, tops), the catalog has
+# 450+ distinct instrument names, and pair/triple overlap is O(n^2)/O(n^3) in
+# that count. Confirmed live: the unrestricted triple query produced ~6.8M
+# rows, which then OOM'd/timed out the /instruments page (see the long
+# comment above ARCHIVE_OVERLAP_QUERY). Must match webapp.app's
+# INSTRUMENT_OVERLAP_HEATMAP_TOP_N, which already caps the heatmap display to
+# the top 20 -- capping here too just means the Venn picker's dropdowns only
+# offer those same top 20 instruments, instead of silently having no triple
+# data for the other 400+ if they were picked.
+INSTRUMENT_OVERLAP_TOP_N = 20
+
+INSTRUMENT_OVERLAP_TOP_INSTRUMENTS_CTE = f"""
+    top_instruments AS (
+        SELECT instrument
+        FROM pg.spectroscopy_holdings
+        WHERE match_status = 'matched' AND instrument IS NOT NULL
+        GROUP BY instrument
+        ORDER BY count(*) DESC
+        LIMIT {INSTRUMENT_OVERLAP_TOP_N}
+    )
+"""
+
+INSTRUMENT_OVERLAP_QUERY = f"""
+WITH {INSTRUMENT_OVERLAP_TOP_INSTRUMENTS_CTE},
+per_star AS (
     SELECT star_id, array_agg(DISTINCT instrument) AS insts
     FROM pg.spectroscopy_holdings
-    WHERE match_status = 'matched' AND star_id IS NOT NULL AND instrument IS NOT NULL
+    WHERE match_status = 'matched' AND star_id IS NOT NULL
+      AND instrument IN (SELECT instrument FROM top_instruments)
     GROUP BY star_id
 )
 SELECT a.instrument AS instrument_a, b.instrument AS instrument_b, count(*) AS n_overlap
@@ -646,11 +721,13 @@ GROUP BY 1, 2
 ORDER BY 1, 2
 """
 
-INSTRUMENT_OVERLAP_TRIPLE_QUERY = """
-WITH per_star AS (
+INSTRUMENT_OVERLAP_TRIPLE_QUERY = f"""
+WITH {INSTRUMENT_OVERLAP_TOP_INSTRUMENTS_CTE},
+per_star AS (
     SELECT star_id, array_agg(DISTINCT instrument) AS insts
     FROM pg.spectroscopy_holdings
-    WHERE match_status = 'matched' AND star_id IS NOT NULL AND instrument IS NOT NULL
+    WHERE match_status = 'matched' AND star_id IS NOT NULL
+      AND instrument IN (SELECT instrument FROM top_instruments)
     GROUP BY star_id
 )
 SELECT
@@ -674,6 +751,9 @@ def export_stats_summary(con: duckdb.DuckDBPyConnection, out_dir: str) -> None:
     summary = {
         "total_stars": con.execute("SELECT count(*) FROM pg.stars").fetchone()[0],
         "total_holdings": con.execute("SELECT count(*) FROM pg.spectroscopy_holdings").fetchone()[0],
+        "needs_review_total": con.execute(
+            "SELECT count(*) FROM pg.spectroscopy_holdings WHERE match_status = 'needs_review'"
+        ).fetchone()[0],
         "trending_years": TRENDING_YEARS,
         **{name: _fetch_all(con, sql) for name, sql in STATS_QUERIES.items()},
     }
@@ -780,6 +860,18 @@ def export_tables(database_url: str, out_dir: str) -> None:
         triage_queue_path = os.path.join(out_dir, "triage_queue.parquet")
         _atomic_copy(con, TRIAGE_QUEUE_QUERY, triage_queue_path)
         logger.info("exported triage_queue -> %s", triage_queue_path)
+
+        needs_review_path = os.path.join(out_dir, "needs_review.parquet")
+        _atomic_copy(con, NEEDS_REVIEW_QUERY, needs_review_path)
+        logger.info("exported needs_review -> %s", needs_review_path)
+
+        skipped_by_archive_path = os.path.join(out_dir, "skipped_by_archive.parquet")
+        _atomic_copy(con, SKIPPED_BY_ARCHIVE_QUERY, skipped_by_archive_path)
+        logger.info("exported skipped_by_archive -> %s", skipped_by_archive_path)
+
+        skipped_path = os.path.join(out_dir, "skipped.parquet")
+        _atomic_copy(con, SKIPPED_QUERY, skipped_path)
+        logger.info("exported skipped -> %s", skipped_path)
 
         archive_overlap_path = os.path.join(out_dir, "archive_overlap.parquet")
         _atomic_copy(con, ARCHIVE_OVERLAP_QUERY, archive_overlap_path)
