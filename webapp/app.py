@@ -442,11 +442,13 @@ SHARED_STYLE = """
     details { border: 1px solid #000; margin-top: 0.5rem; padding: 0.3rem 0.5rem; }
     details table { margin-top: 0.3rem; }
     summary { cursor: pointer; font-weight: bold; }
+    summary.summary-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    summary.summary-row .summary-count { flex-shrink: 0; white-space: nowrap; font-weight: normal; }
     nav.tabs { display: flex; gap: 0; border-bottom: 1px solid #000; margin-bottom: 1.5rem; }
     nav.tabs a { text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #000; border-bottom: none;
                  margin-right: 0.3rem; color: #000; }
     nav.tabs a.active { font-weight: bold; background: #000; color: #fff; }
-    .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
     .site-header h1 { margin: 0; }
     .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
                          border-radius: 4px; object-fit: cover; }
@@ -554,9 +556,9 @@ PAGE_TEMPLATE = """
           };
           Plotly.newPlot('wavelength-plot', [trace], {
             barmode: 'overlay',
-            height: Math.max(60, 20 + nRows * 22),
-            margin: { l: 8, r: 8, t: 4, b: 28 },
-            xaxis: { title: 'Wavelength (nm)', type: 'log' },
+            height: Math.max(60, 20 + nRows * 22) + 20,
+            margin: { l: 8, r: 8, t: 4, b: 48 },
+            xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
             yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
           }, { responsive: true, displayModeBar: false });
         })();
@@ -567,7 +569,10 @@ PAGE_TEMPLATE = """
       <p><a href="?q={{ star_search_id }}&amp;format=csv">Download holdings as CSV</a></p>
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
-        <summary>{{ g.display_name }} — {{ g.instrument or "—" }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
+        <summary class="summary-row">
+          <span>{{ g.display_name }} — {{ g.instrument or "—" }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %}</span>
+          <span class="summary-count">{{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }}</span>
+        </summary>
         <table>
           <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th></tr>
           {% for h in g.observations %}
@@ -848,11 +853,17 @@ CMD_TEMPLATE = """
         type: 'scattergl',
         marker: {
           size: 5, opacity: 0.75, color: bpRp,
-          // Explicit, unambiguous stops rather than a named palette +
-          // reversescale — low BP-RP (hot/blue stars) -> blue, high
-          // BP-RP (cool/red stars) -> red, matching real star color.
-          colorscale: [[0, 'blue'], [0.5, '#ccc'], [1, 'red']],
-          cmin: -0.5, cmax: 5,
+          // ColorBrewer "Spectral" reversed (violet/blue -> red), explicit
+          // stops rather than a named palette + reversescale so the low end
+          // (hot/blue stars) reads blue and the high end (cool/red stars)
+          // reads red, matching real star color. cmin/cmax clip to the BP-RP
+          // range that actually spans the CMD's stellar locus.
+          colorscale: [
+            [0, '#5e4fa2'], [0.1, '#3288bd'], [0.2, '#66c2a5'], [0.3, '#abdda4'],
+            [0.4, '#e6f598'], [0.5, '#ffffbf'], [0.6, '#fee08b'], [0.7, '#fdae61'],
+            [0.8, '#f46d43'], [0.9, '#d53e4f'], [1, '#9e0142'],
+          ],
+          cmin: 0, cmax: 3,
           line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
         },
       }], {
@@ -1596,7 +1607,7 @@ INSTRUMENTS_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <h2>Holdings by archive and instrument</h2>
-  <p class="note">Size = number of holdings. Click a box to zoom into an archive's instruments.</p>
+  <p class="note">Size = number of holdings, log-scaled so smaller instruments stay visible next to the largest archives. Click a box to zoom into an archive's instruments.</p>
   {% if treemap_labels %}
     <div id="instrument-treemap"></div>
     <script>
@@ -1605,7 +1616,9 @@ INSTRUMENTS_TEMPLATE = """
         labels: {{ treemap_labels | tojson }},
         parents: {{ treemap_parents | tojson }},
         values: {{ treemap_values | tojson }},
-        textinfo: 'label+value',
+        customdata: {{ treemap_counts | tojson }},
+        texttemplate: '%{label}<br>%{customdata:,}',
+        hovertemplate: '%{label}<br>%{customdata:,} holdings<extra></extra>',
       }], { margin: { t: 10, l: 10, r: 10, b: 10 } }, { responsive: true });
     </script>
   {% else %}
@@ -1617,7 +1630,10 @@ INSTRUMENTS_TEMPLATE = """
   <p class="note">Every distinct instrument name seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) for each -- hand-maintained from published instrument specs, not derived from the database. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it. Many spectrographs offer several gratings or modes with different R; a range is shown where that's the common case rather than picking one mode arbitrarily. "n/a" marks instruments that are primarily imagers; "&mdash;" marks ones not yet looked up.</p>
   {% for a in instruments %}
   <details>
-    <summary>{{ a.display_name }} ({{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }})</summary>
+    <summary class="summary-row">
+      <span>{{ a.display_name }}</span>
+      <span class="summary-count">{{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }}</span>
+    </summary>
     <table>
       <tr><th>Instrument</th><th>Holdings</th><th>Resolving power</th></tr>
       {% for i in a.instruments %}
@@ -2002,18 +2018,27 @@ def instruments_page():
     # Treemap: one root-level node per archive (own value 0 -- Plotly's
     # default 'remainder' branchvalues mode then sizes it as the sum of its
     # instrument children, which is exactly the archive's total), one leaf
-    # per (archive, instrument).
-    treemap_labels, treemap_parents, treemap_values = [], [], []
+    # per (archive, instrument). Box area is driven by log10(n+1) rather than
+    # raw n -- holdings counts span orders of magnitude, and a linear area
+    # scale makes the long tail of small instruments render as invisible
+    # slivers. Real counts are carried separately in treemap_counts for the
+    # label/hover text so the log transform never reaches the reader.
+    treemap_labels, treemap_parents, treemap_values, treemap_counts = [], [], [], []
+    archive_totals: dict[str, int] = defaultdict(int)
+    for r in rows:
+        archive_totals[r["display_name"]] += r["n"]
     seen_archives = set()
     for r in rows:
         if r["display_name"] not in seen_archives:
             treemap_labels.append(r["display_name"])
             treemap_parents.append("")
             treemap_values.append(0)
+            treemap_counts.append(archive_totals[r["display_name"]])
             seen_archives.add(r["display_name"])
         treemap_labels.append(f"{r['display_name']} / {r['instrument']}")
         treemap_parents.append(r["display_name"])
-        treemap_values.append(r["n"])
+        treemap_values.append(math.log10(r["n"] + 1))
+        treemap_counts.append(r["n"])
 
     instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -2081,6 +2106,7 @@ def instruments_page():
     return render_template_string(
         INSTRUMENTS_TEMPLATE,
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
+        treemap_counts=treemap_counts,
         instruments=instruments,
         sky_traces=sky_traces,
         top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
@@ -2978,7 +3004,8 @@ TRIAGE_TEMPLATE = """
     .prior-submissions { font-style: italic; }
     .cone-result { display: block; margin: 0.2rem 0 0.2rem 1.4rem; }
     .record-list { font-size: 0.9rem; }
-    .record-entry { margin-right: 0.8rem; white-space: nowrap; }
+    .record-entries { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; margin-top: 0.3rem; }
+    .record-entry { white-space: nowrap; }
     .record-entry a { margin-right: 0.3rem; }
     .header-link { font-size: 0.85em; color: #555; }
     .mood-image { float: right; max-width: 140px; margin: 0 0 0.5rem 1rem; }
@@ -3051,8 +3078,10 @@ TRIAGE_TEMPLATE = """
 
     <details class="record-list">
       <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name</summary>
-      {% for rec in r.records %}<span class="record-entry"><a href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.oid }}</a>{% if rec.header_url %} <a href="{{ rec.header_url }}" target="_blank" rel="noopener" class="header-link">headers</a>{% endif %}</span>{% endfor %}
-      {% if r.records_truncated %}<span class="note">…and more (showing first {{ r.records|length }})</span>{% endif %}
+      <div class="record-entries">
+        {% for rec in r.records %}<span class="record-entry"><a href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.oid }}</a>{% if rec.header_url %} <a href="{{ rec.header_url }}" target="_blank" rel="noopener" class="header-link">headers</a>{% endif %}</span>{% endfor %}
+        {% if r.records_truncated %}<span class="note">…and more (showing first {{ r.records|length }})</span>{% endif %}
+      </div>
     </details>
 
     {% if r.sky_finder_url %}
@@ -3166,25 +3195,39 @@ def _triage_redirect(offset: int, **params) -> Response:
 
 # Every visitor used to see the literal same fixed slice of triage_queue in
 # the same order every time (a plain SQL ORDER BY over a small, infrequently
-# -changing precomputed table -- see TRIAGE_QUEUE_QUERY's own LIMIT 200 in
-# scripts/export_to_parquet.py) -- confirmed this meant everyone triaging on
-# a given day just worked through the identical sequence of records.
-# Reordered here instead, once per request, keyed off a random per-visitor
-# seed cookie (TRIAGE_SEED_COOKIE) so different visitors fan out across the
-# pool -- named groups still always sort before nameless ones (matches
-# triage_queue's own priority, no reason to ever invert that), but within
-# each of those two tiers the order is a weighted random shuffle
+# -changing precomputed table -- see TRIAGE_QUEUE_QUERY's own LIMIT
+# TRIAGE_QUEUE_TOP_N in scripts/export_to_parquet.py) -- confirmed this meant
+# everyone triaging on a given day just worked through the identical sequence
+# of records. Reordered here instead, once per request, keyed off a random
+# per-visitor seed cookie (TRIAGE_SEED_COOKIE) so different visitors fan out
+# across the pool -- named groups still always sort before nameless ones
+# (matches triage_queue's own priority, no reason to ever invert that), but
+# within each of those two tiers the order is a weighted random shuffle
 # (Efraimidis-Spirakis weighted sampling: key = -ln(u)/weight, sorted
 # ascending) so a group with many underlying records is *more likely* to
 # surface early without being pinned to the exact same n_records-DESC order
-# every single time. The whole pool is at most TRIAGE_QUEUE_TOP_N (200) rows
-# -- cheap to pull in full and reorder in Python rather than pushing this
-# into SQL.
-def _shuffle_triage_pool(pool: list[dict], seed: str) -> list[dict]:
+# every single time. TRIAGE_QUEUE_TOP_N (now in the low thousands rather than
+# 200) is cheap to pull in full and reorder in Python rather than pushing
+# this into SQL.
+#
+# votes_by_group halves a group's weight per distinct submitter who's already
+# classified it (0 votes -> full weight, 1 -> half, 2 -- the eventual target
+# of "just get a couple independent eyes on each name" -- -> a quarter, and
+# so on) so groups that already have enough independent eyes on them fade
+# from rotation and under-covered ones surface more -- a soft nudge rather
+# than a hard cutoff, since nothing here excludes a name outright once it
+# hits that target (submitters can disagree, and a third opinion is still
+# useful; there's also no quorum-consuming apply step wired up yet for this
+# to gate, see the /triage page's own note).
+def _shuffle_triage_pool(pool: list[dict], seed: str, votes_by_group: dict[tuple, int]) -> list[dict]:
     rng = random.Random(seed)
 
+    def weight(item: dict) -> float:
+        votes = votes_by_group.get((item["archive_code"], item["group_key"]), 0)
+        return max(item["n_records"], 1) / (2 ** votes)
+
     def weighted_shuffle(items: list[dict]) -> list[dict]:
-        keyed = [(-math.log(rng.random()) / max(item["n_records"], 1), item) for item in items]
+        keyed = [(-math.log(rng.random()) / weight(item), item) for item in items]
         keyed.sort(key=lambda pair: pair[0])
         return [item for _, item in keyed]
 
@@ -3254,6 +3297,16 @@ def triage():
         group_key = name if name else f"obs:{s.get('archive_obs_id')}"
         submissions_by_group[(s.get("archive_code"), group_key)].append(s)
 
+    # Distinct-submitter count per group, independent of which submitter is
+    # asking -- feeds _shuffle_triage_pool's weighting below so names that
+    # already have several independent votes fade from everyone's rotation,
+    # not just this submitter's (that's the submitter_key filter right after
+    # this, which is a per-visitor exclusion rather than a shared signal).
+    votes_by_group = {
+        key: len({(s.get("submitter") or "").strip().casefold() for s in subs if (s.get("submitter") or "").strip()})
+        for key, subs in submissions_by_group.items()
+    }
+
     # Step 2 of 2: filter out anything this submitter already voted on.
     # Case-insensitive/trimmed compare since "handle" is free text, not an
     # account -- catches the common "Zach" vs "zach" variance without
@@ -3268,7 +3321,7 @@ def triage():
     ]
 
     seed = request.cookies.get(TRIAGE_SEED_COOKIE) or secrets.token_hex(8)
-    ordered = _shuffle_triage_pool(pool, seed)
+    ordered = _shuffle_triage_pool(pool, seed, votes_by_group)
     total = len(ordered)
 
     try:
