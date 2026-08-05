@@ -442,11 +442,13 @@ SHARED_STYLE = """
     details { border: 1px solid #000; margin-top: 0.5rem; padding: 0.3rem 0.5rem; }
     details table { margin-top: 0.3rem; }
     summary { cursor: pointer; font-weight: bold; }
+    summary.summary-row { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    summary.summary-row .summary-count { flex-shrink: 0; white-space: nowrap; font-weight: normal; }
     nav.tabs { display: flex; gap: 0; border-bottom: 1px solid #000; margin-bottom: 1.5rem; }
     nav.tabs a { text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #000; border-bottom: none;
                  margin-right: 0.3rem; color: #000; }
     nav.tabs a.active { font-weight: bold; background: #000; color: #fff; }
-    .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
     .site-header h1 { margin: 0; }
     .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
                          border-radius: 4px; object-fit: cover; }
@@ -554,9 +556,9 @@ PAGE_TEMPLATE = """
           };
           Plotly.newPlot('wavelength-plot', [trace], {
             barmode: 'overlay',
-            height: Math.max(60, 20 + nRows * 22),
-            margin: { l: 8, r: 8, t: 4, b: 28 },
-            xaxis: { title: 'Wavelength (nm)', type: 'log' },
+            height: Math.max(60, 20 + nRows * 22) + 20,
+            margin: { l: 8, r: 8, t: 4, b: 48 },
+            xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
             yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
           }, { responsive: true, displayModeBar: false });
         })();
@@ -567,7 +569,10 @@ PAGE_TEMPLATE = """
       <p><a href="?q={{ star_search_id }}&amp;format=csv">Download holdings as CSV</a></p>
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
-        <summary>{{ g.display_name }} — {{ g.instrument or "—" }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %} ({{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }})</summary>
+        <summary class="summary-row">
+          <span>{{ g.display_name }} — {{ g.instrument or "—" }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %}</span>
+          <span class="summary-count">{{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }}</span>
+        </summary>
         <table>
           <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th></tr>
           {% for h in g.observations %}
@@ -848,11 +853,17 @@ CMD_TEMPLATE = """
         type: 'scattergl',
         marker: {
           size: 5, opacity: 0.75, color: bpRp,
-          // Explicit, unambiguous stops rather than a named palette +
-          // reversescale — low BP-RP (hot/blue stars) -> blue, high
-          // BP-RP (cool/red stars) -> red, matching real star color.
-          colorscale: [[0, 'blue'], [0.5, '#ccc'], [1, 'red']],
-          cmin: -0.5, cmax: 5,
+          // ColorBrewer "Spectral" reversed (violet/blue -> red), explicit
+          // stops rather than a named palette + reversescale so the low end
+          // (hot/blue stars) reads blue and the high end (cool/red stars)
+          // reads red, matching real star color. cmin/cmax clip to the BP-RP
+          // range that actually spans the CMD's stellar locus.
+          colorscale: [
+            [0, '#5e4fa2'], [0.1, '#3288bd'], [0.2, '#66c2a5'], [0.3, '#abdda4'],
+            [0.4, '#e6f598'], [0.5, '#ffffbf'], [0.6, '#fee08b'], [0.7, '#fdae61'],
+            [0.8, '#f46d43'], [0.9, '#d53e4f'], [1, '#9e0142'],
+          ],
+          cmin: 0, cmax: 3,
           line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
         },
       }], {
@@ -1596,7 +1607,7 @@ INSTRUMENTS_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <h2>Holdings by archive and instrument</h2>
-  <p class="note">Size = number of holdings. Click a box to zoom into an archive's instruments.</p>
+  <p class="note">Size = number of holdings, log-scaled so smaller instruments stay visible next to the largest archives. Click a box to zoom into an archive's instruments.</p>
   {% if treemap_labels %}
     <div id="instrument-treemap"></div>
     <script>
@@ -1605,7 +1616,9 @@ INSTRUMENTS_TEMPLATE = """
         labels: {{ treemap_labels | tojson }},
         parents: {{ treemap_parents | tojson }},
         values: {{ treemap_values | tojson }},
-        textinfo: 'label+value',
+        customdata: {{ treemap_counts | tojson }},
+        texttemplate: '%{label}<br>%{customdata:,}',
+        hovertemplate: '%{label}<br>%{customdata:,} holdings<extra></extra>',
       }], { margin: { t: 10, l: 10, r: 10, b: 10 } }, { responsive: true });
     </script>
   {% else %}
@@ -1617,7 +1630,10 @@ INSTRUMENTS_TEMPLATE = """
   <p class="note">Every distinct instrument name seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) for each -- hand-maintained from published instrument specs, not derived from the database. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it. Many spectrographs offer several gratings or modes with different R; a range is shown where that's the common case rather than picking one mode arbitrarily. "n/a" marks instruments that are primarily imagers; "&mdash;" marks ones not yet looked up.</p>
   {% for a in instruments %}
   <details>
-    <summary>{{ a.display_name }} ({{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }})</summary>
+    <summary class="summary-row">
+      <span>{{ a.display_name }}</span>
+      <span class="summary-count">{{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }}</span>
+    </summary>
     <table>
       <tr><th>Instrument</th><th>Holdings</th><th>Resolving power</th></tr>
       {% for i in a.instruments %}
@@ -2002,18 +2018,27 @@ def instruments_page():
     # Treemap: one root-level node per archive (own value 0 -- Plotly's
     # default 'remainder' branchvalues mode then sizes it as the sum of its
     # instrument children, which is exactly the archive's total), one leaf
-    # per (archive, instrument).
-    treemap_labels, treemap_parents, treemap_values = [], [], []
+    # per (archive, instrument). Box area is driven by log10(n+1) rather than
+    # raw n -- holdings counts span orders of magnitude, and a linear area
+    # scale makes the long tail of small instruments render as invisible
+    # slivers. Real counts are carried separately in treemap_counts for the
+    # label/hover text so the log transform never reaches the reader.
+    treemap_labels, treemap_parents, treemap_values, treemap_counts = [], [], [], []
+    archive_totals: dict[str, int] = defaultdict(int)
+    for r in rows:
+        archive_totals[r["display_name"]] += r["n"]
     seen_archives = set()
     for r in rows:
         if r["display_name"] not in seen_archives:
             treemap_labels.append(r["display_name"])
             treemap_parents.append("")
             treemap_values.append(0)
+            treemap_counts.append(archive_totals[r["display_name"]])
             seen_archives.add(r["display_name"])
         treemap_labels.append(f"{r['display_name']} / {r['instrument']}")
         treemap_parents.append(r["display_name"])
-        treemap_values.append(r["n"])
+        treemap_values.append(math.log10(r["n"] + 1))
+        treemap_counts.append(r["n"])
 
     instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -2081,6 +2106,7 @@ def instruments_page():
     return render_template_string(
         INSTRUMENTS_TEMPLATE,
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
+        treemap_counts=treemap_counts,
         instruments=instruments,
         sky_traces=sky_traces,
         top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
