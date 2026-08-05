@@ -61,6 +61,38 @@ from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gai
 
 app = Flask(__name__)
 
+# Set on the old renamed-away service (e.g. the original spectra-database
+# Cloud Run URL) so every request there shows a moved notice with a link to
+# the current site, instead of just going dark or silently redirecting --
+# keeps old bookmarks/links understandable during the decommission window.
+_REDIRECT_BASE_URL = os.environ.get("REDIRECT_BASE_URL", "").rstrip("/")
+_MOVED_NOTICE_DEADLINE = "September 5, 2026"
+
+if _REDIRECT_BASE_URL:
+    @app.before_request
+    def _show_moved_notice():
+        target = _REDIRECT_BASE_URL + request.path
+        if request.query_string:
+            target += "?" + request.query_string.decode()
+        return f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>The Spectra Pointer has moved</title>
+  <style>{SHARED_STYLE}</style>
+</head>
+<body>
+  <h1>This site has moved</h1>
+  <p>Spectra Database has been renamed <strong>The Spectra Pointer</strong>
+    and now lives at a new address:</p>
+  <p><a href="{target}">{target}</a></p>
+  <p class="note">This address ({_REDIRECT_BASE_URL}) will be taken offline
+    around {_MOVED_NOTICE_DEADLINE} -- please update any bookmarks or links.</p>
+</body>
+</html>
+"""
+
 # Source_id lookups are one indexed query regardless of list size — no cap
 # needed. Name lookups each cost a SIMBAD round trip (batched, but still),
 # so cap the list to keep a single upload from turning into a huge SIMBAD
