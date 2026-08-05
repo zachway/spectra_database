@@ -844,44 +844,67 @@ CMD_TEMPLATE = """
       // they can't get silently rounded by the browser.
       const sourceIds = {{ source_ids | tojson }};
       const labels = {{ labels | tojson }};
-      Plotly.newPlot('cmd-plot', [{
-        x: bpRp,
-        y: absGMag,
-        text: labels,
-        hovertemplate: '%{text}<extra></extra>',
-        mode: 'markers',
-        type: 'scattergl',
-        marker: {
-          size: 5, opacity: 0.75, color: bpRp,
-          // Anchored to Mamajek's dwarf color/Teff table (Bp-Rp column --
-          // https://github.com/emamajek/SpectralType/blob/master/EEM_dwarf_UBVIJHK_colors_Teff.txt,
-          // 2024.05.15) rather than a generic diverging palette, so the
-          // stops land on real spectral-type colors instead of an arbitrary
-          // gradient: O5V (blue), G5V (green), K5V (orange), M5V (red) --
-          // this app's own validated categorical blue/green/orange/red, not
-          // new hex picks. O5V has no tabulated Bp-Rp in that table (Gaia
-          // BP/RP isn't calibrated that hot) -- extrapolated from the
-          // B9V-F0V rows, where both B-V and Bp-Rp are tabulated, via a
-          // linear B-V -> Bp-Rp fit (slope 1.36, intercept -0.028) applied
-          // to O5V's B-V of -0.323. cmin/cmax are the O5V/M5V anchors
-          // themselves, so the whole O class saturates to this blue and the
-          // whole M class (out through the latest, reddest M dwarfs) to
-          // this red rather than clipping partway through either.
-          colorscale: [
-            [0, '#2a78d6'],     // O5V, Bp-Rp ~ -0.47 (extrapolated)
-            [0.35, '#008300'],  // G5V, Bp-Rp = 0.85
-            [0.50, '#eb6834'],  // K5V, Bp-Rp = 1.43
-            [1, '#e34948'],     // M5V, Bp-Rp = 3.35
-          ],
-          cmin: -0.47, cmax: 3.35,
-          line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
+      Plotly.newPlot('cmd-plot', [
+        {
+          x: bpRp,
+          y: absGMag,
+          text: labels,
+          hovertemplate: '%{text}<extra></extra>',
+          mode: 'markers',
+          type: 'scattergl',
+          marker: {
+            size: 5, opacity: 0.75, color: bpRp,
+            // Anchored to Mamajek's dwarf color/Teff table (Bp-Rp column --
+            // https://github.com/emamajek/SpectralType/blob/master/EEM_dwarf_UBVIJHK_colors_Teff.txt,
+            // 2024.05.15) rather than a generic diverging palette, so the
+            // stops land on real spectral-type colors instead of an arbitrary
+            // gradient: O5V (blue), G5V (green), K5V (orange), M5V (red) --
+            // this app's own validated categorical blue/green/orange/red, not
+            // new hex picks. O5V has no tabulated Bp-Rp in that table (Gaia
+            // BP/RP isn't calibrated that hot) -- extrapolated from the
+            // B9V-F0V rows, where both B-V and Bp-Rp are tabulated, via a
+            // linear B-V -> Bp-Rp fit (slope 1.36, intercept -0.028) applied
+            // to O5V's B-V of -0.323. cmin/cmax are the O5V/M5V anchors
+            // themselves, so the whole O class saturates to this blue and the
+            // whole M class (out through the latest, reddest M dwarfs) to
+            // this red rather than clipping partway through either.
+            colorscale: [
+              [0, '#2a78d6'],     // O5V, Bp-Rp ~ -0.47 (extrapolated)
+              [0.35, '#008300'],  // G5V, Bp-Rp = 0.85
+              [0.50, '#eb6834'],  // K5V, Bp-Rp = 1.43
+              [1, '#e34948'],     // M5V, Bp-Rp = 3.35
+            ],
+            cmin: -0.47, cmax: 3.35,
+            line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
+          },
         },
-      }], {
+        {
+          // Invisible dummy trace bound to xaxis2 -- Plotly never draws an
+          // axis that no trace references, even one declared purely for its
+          // tick labels. x/y values are irrelevant since xaxis2's `matches:
+          // 'x'` below pins its range to the primary axis regardless of
+          // what this trace itself would otherwise autorange to.
+          x: [0], y: [0], xaxis: 'x2', yaxis: 'y',
+          mode: 'markers', marker: { opacity: 0 }, showlegend: false, hoverinfo: 'skip',
+        },
+      ], {
         xaxis: { title: 'BP - RP (mag)' },
+        // Same Mamajek Bp-Rp-at-mid-type anchors as the marker colorscale
+        // above, just three more of them (B/A/F) for a legible top axis --
+        // O5V/B5V extrapolated (see the colorscale comment), A5V/F5V/G5V/
+        // K5V/M5V tabulated directly.
+        xaxis2: {
+          overlaying: 'x', matches: 'x', side: 'top',
+          tickmode: 'array',
+          tickvals: [-0.47, -0.24, 0.194, 0.587, 0.85, 1.43, 3.35],
+          ticktext: ['O', 'B', 'A', 'F', 'G', 'K', 'M'],
+          title: 'Spectral type (dwarfs, Mamajek)',
+        },
         yaxis: { title: 'Absolute G magnitude', autorange: 'reversed' },
         hovermode: 'closest',
       }, { responsive: true });
       document.getElementById('cmd-plot').on('plotly_click', function(data) {
+        if (data.points[0].curveNumber !== 0) return;
         const idx = data.points[0].pointIndex;
         window.location.href = '/?q=' + sourceIds[idx];
       });
