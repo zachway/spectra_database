@@ -844,6 +844,39 @@ CMD_TEMPLATE = """
       // they can't get silently rounded by the browser.
       const sourceIds = {{ source_ids | tojson }};
       const labels = {{ labels | tojson }};
+
+      // Spectral-class boundaries (Bp-Rp) from Mamajek's dwarf color/Teff
+      // table -- https://github.com/emamajek/SpectralType/blob/master/EEM_dwarf_UBVIJHK_colors_Teff.txt,
+      // 2024.05.15. O5V (not a true class start -- Gaia BP/RP has no
+      // earlier calibration, same reasoning as before) and B0V (no
+      // tabulated Bp-Rp for any B0-B8 dwarf) are extrapolated from the
+      // B9V-F0V rows via a linear B-V -> Bp-Rp fit (slope 1.36, intercept
+      // -0.028); A0V/F0V/G0V/K0V/M0V/M9V are read straight from the table.
+      const SPECTRAL_TYPE_BOUNDS = [-0.47, -0.44, -0.037, 0.377, 0.784, 0.983, 1.84, 4.78];
+
+      // Maps a raw Bp-Rp value to a position in [0, 1] with each of the 7
+      // classes above (the gaps between consecutive bounds) getting an
+      // equal 1/7 share, linearly interpolated within its own real Bp-Rp
+      // span -- rather than the whole colormap being spent proportionally
+      // to raw Bp-Rp, which is what a plain cmin/cmax mapping does and
+      // which starved O-B-A-F (barely 1.3 mag wide combined) of almost all
+      // visible color change while K-M (nearly 3 mag wide) ate most of the
+      // ramp. Bp-Rp outside this domain clamps to the nearest end rather
+      // than inventing color for spectral types this table doesn't
+      // usefully cover (see the CMD colorscale PR history for why L/T/Y
+      // aren't included).
+      function stretchBpRpBySpectralType(bpRp) {
+        const n = SPECTRAL_TYPE_BOUNDS.length - 1;
+        if (bpRp <= SPECTRAL_TYPE_BOUNDS[0]) return 0;
+        if (bpRp >= SPECTRAL_TYPE_BOUNDS[n]) return 1;
+        for (let i = 0; i < n; i++) {
+          const lo = SPECTRAL_TYPE_BOUNDS[i], hi = SPECTRAL_TYPE_BOUNDS[i + 1];
+          if (bpRp <= hi) return (i + (bpRp - lo) / (hi - lo)) / n;
+        }
+        return 1;
+      }
+      const stretchedColor = bpRp.map(stretchBpRpBySpectralType);
+
       Plotly.newPlot('cmd-plot', [
         {
           x: bpRp,
@@ -853,41 +886,19 @@ CMD_TEMPLATE = """
           mode: 'markers',
           type: 'scattergl',
           marker: {
-            size: 5, opacity: 0.75, color: bpRp,
-            // Anchored to Mamajek's dwarf color/Teff table (Bp-Rp column --
-            // https://github.com/emamajek/SpectralType/blob/master/EEM_dwarf_UBVIJHK_colors_Teff.txt,
-            // 2024.05.15) rather than a generic diverging palette, so the
-            // stops land on real spectral-type colors instead of an
-            // arbitrary gradient. O5V/G5V/K5V/M5V are this app's own
-            // validated categorical blue/green/orange/red (not new hex
-            // picks); B5V/A5V/F5V fill the O-to-G gap with a genuinely
-            // smooth transition rather than one giant blue-to-green jump
-            // covering a third of the scale -- each is a straight HLS lerp
-            // between the O5V and G5V anchors, weighted by that type's own
-            // fractional position in the O5V-G5V Bp-Rp span (not evenly
-            // spaced), so a densely-populated stretch like early-to-mid
-            // F still gets proportionally graded color rather than being
-            // squeezed into an even 1/3-of-the-way step. G5V-K5V-M5V stay a
-            // plain 3-point interpolation since OBAFGKM has no class
-            // between any of those three. O5V has no tabulated Bp-Rp in
-            // that table (Gaia BP/RP isn't calibrated that hot) --
-            // extrapolated from the B9V-F0V rows, where both B-V and Bp-Rp
-            // are tabulated, via a linear B-V -> Bp-Rp fit (slope 1.36,
-            // intercept -0.028); B5V is extrapolated the same way. cmin/cmax
-            // are the O5V/M5V anchors themselves, so the whole O class
-            // saturates to this blue and the whole M class (out through the
-            // latest, reddest M dwarfs) to this red rather than clipping
-            // partway through either.
+            size: 5, opacity: 0.75, color: stretchedColor,
+            // ColorBrewer "Spectral" reversed (violet/blue -> red) -- a
+            // smooth, continuous rainbow rather than a handful of
+            // hand-picked anchor colors, applied to stretchedColor (see
+            // above) rather than raw bpRp so the smoothness is spent where
+            // spectral types actually are instead of where raw Bp-Rp
+            // magnitude happens to be.
             colorscale: [
-              [0,    '#2a78d6'],  // O5V, Bp-Rp ~ -0.47 (extrapolated)
-              [0.06, '#1f9bcb'],  // B5V, Bp-Rp ~ -0.24 (extrapolated)
-              [0.17, '#0fb28c'],  // A5V, Bp-Rp = 0.194
-              [0.28, '#059732'],  // F5V, Bp-Rp = 0.587
-              [0.35, '#008300'],  // G5V, Bp-Rp = 0.85
-              [0.50, '#eb6834'],  // K5V, Bp-Rp = 1.43
-              [1,    '#e34948'],  // M5V, Bp-Rp = 3.35
+              [0, '#5e4fa2'], [0.1, '#3288bd'], [0.2, '#66c2a5'], [0.3, '#abdda4'],
+              [0.4, '#e6f598'], [0.5, '#ffffbf'], [0.6, '#fee08b'], [0.7, '#fdae61'],
+              [0.8, '#f46d43'], [0.9, '#d53e4f'], [1, '#9e0142'],
             ],
-            cmin: -0.47, cmax: 3.35,
+            cmin: 0, cmax: 1,
             line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
           },
         },
