@@ -1670,6 +1670,7 @@ INSTRUMENTS_TEMPLATE = """
     <script>
       Plotly.newPlot('instrument-treemap', [{
         type: 'treemap',
+        branchvalues: 'total',
         labels: {{ treemap_labels | tojson }},
         parents: {{ treemap_parents | tojson }},
         values: {{ treemap_values | tojson }},
@@ -2072,14 +2073,25 @@ def instruments_page():
     cur.execute("SELECT display_name, instrument, n FROM instruments ORDER BY display_name, n DESC")
     rows = _rows_as_dicts(cur)
 
-    # Treemap: one root-level node per archive (own value 0 -- Plotly's
-    # default 'remainder' branchvalues mode then sizes it as the sum of its
-    # instrument children, which is exactly the archive's total), one leaf
-    # per (archive, instrument). Box area is driven by log10(n+1) rather than
-    # raw n -- holdings counts span orders of magnitude, and a linear area
-    # scale makes the long tail of small instruments render as invisible
-    # slivers. Real counts are carried separately in treemap_counts for the
+    # Treemap: one root-level node per archive, one leaf per (archive,
+    # instrument). Box area is driven by log10(n+1) rather than raw n --
+    # holdings counts span orders of magnitude, and a linear area scale
+    # makes the long tail of small instruments render as invisible slivers.
+    # Real counts are carried separately in treemap_counts for the
     # label/hover text so the log transform never reaches the reader.
+    #
+    # Each archive node gets its own explicit log10(archive_total+1) value,
+    # and the trace uses branchvalues:'total' (see the JS below) rather than
+    # the default 'remainder' mode with a value of 0. Under 'remainder', an
+    # archive's box size is the *sum of its children's log values*, which is
+    # not the same as the log of the archive's total (log(a)+log(b) !=
+    # log(a+b)) -- that made an archive's box size track its instrument
+    # *count* almost as much as its holdings total, so an archive with many
+    # small instruments could out-size one dominated by a single huge
+    # instrument. With 'total', each archive's own value is authoritative
+    # for comparing it against other archives, while its instrument leaves
+    # are still apportioned within it by their relative log values, so small
+    # instruments stay visible without corrupting the archive-level sizing.
     treemap_labels, treemap_parents, treemap_values, treemap_counts = [], [], [], []
     archive_totals: dict[str, int] = defaultdict(int)
     for r in rows:
@@ -2089,7 +2101,7 @@ def instruments_page():
         if r["display_name"] not in seen_archives:
             treemap_labels.append(r["display_name"])
             treemap_parents.append("")
-            treemap_values.append(0)
+            treemap_values.append(math.log10(archive_totals[r["display_name"]] + 1))
             treemap_counts.append(archive_totals[r["display_name"]])
             seen_archives.add(r["display_name"])
         treemap_labels.append(f"{r['display_name']} / {r['instrument']}")
