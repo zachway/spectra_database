@@ -853,17 +853,27 @@ CMD_TEMPLATE = """
         type: 'scattergl',
         marker: {
           size: 5, opacity: 0.75, color: bpRp,
-          // ColorBrewer "Spectral" reversed (violet/blue -> red), explicit
-          // stops rather than a named palette + reversescale so the low end
-          // (hot/blue stars) reads blue and the high end (cool/red stars)
-          // reads red, matching real star color. cmin/cmax clip to the BP-RP
-          // range that actually spans the CMD's stellar locus.
+          // Anchored to Mamajek's dwarf color/Teff table (Bp-Rp column --
+          // https://github.com/emamajek/SpectralType/blob/master/EEM_dwarf_UBVIJHK_colors_Teff.txt,
+          // 2024.05.15) rather than a generic diverging palette, so the
+          // stops land on real spectral-type colors instead of an arbitrary
+          // gradient: O5V (blue), G5V (green), K5V (orange), M5V (red) --
+          // this app's own validated categorical blue/green/orange/red, not
+          // new hex picks. O5V has no tabulated Bp-Rp in that table (Gaia
+          // BP/RP isn't calibrated that hot) -- extrapolated from the
+          // B9V-F0V rows, where both B-V and Bp-Rp are tabulated, via a
+          // linear B-V -> Bp-Rp fit (slope 1.36, intercept -0.028) applied
+          // to O5V's B-V of -0.323. cmin/cmax are the O5V/M5V anchors
+          // themselves, so the whole O class saturates to this blue and the
+          // whole M class (out through the latest, reddest M dwarfs) to
+          // this red rather than clipping partway through either.
           colorscale: [
-            [0, '#5e4fa2'], [0.1, '#3288bd'], [0.2, '#66c2a5'], [0.3, '#abdda4'],
-            [0.4, '#e6f598'], [0.5, '#ffffbf'], [0.6, '#fee08b'], [0.7, '#fdae61'],
-            [0.8, '#f46d43'], [0.9, '#d53e4f'], [1, '#9e0142'],
+            [0, '#2a78d6'],     // O5V, Bp-Rp ~ -0.47 (extrapolated)
+            [0.35, '#008300'],  // G5V, Bp-Rp = 0.85
+            [0.50, '#eb6834'],  // K5V, Bp-Rp = 1.43
+            [1, '#e34948'],     // M5V, Bp-Rp = 3.35
           ],
-          cmin: 0, cmax: 3,
+          cmin: -0.47, cmax: 3.35,
           line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
         },
       }], {
