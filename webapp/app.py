@@ -3004,7 +3004,8 @@ TRIAGE_TEMPLATE = """
     .prior-submissions { font-style: italic; }
     .cone-result { display: block; margin: 0.2rem 0 0.2rem 1.4rem; }
     .record-list { font-size: 0.9rem; }
-    .record-entry { margin-right: 0.8rem; white-space: nowrap; }
+    .record-entries { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; margin-top: 0.3rem; }
+    .record-entry { white-space: nowrap; }
     .record-entry a { margin-right: 0.3rem; }
     .header-link { font-size: 0.85em; color: #555; }
     .mood-image { float: right; max-width: 140px; margin: 0 0 0.5rem 1rem; }
@@ -3077,8 +3078,10 @@ TRIAGE_TEMPLATE = """
 
     <details class="record-list">
       <summary>{{ r.n_records }} archive record{{ "s" if r.n_records != 1 else "" }} under this name</summary>
-      {% for rec in r.records %}<span class="record-entry"><a href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.oid }}</a>{% if rec.header_url %} <a href="{{ rec.header_url }}" target="_blank" rel="noopener" class="header-link">headers</a>{% endif %}</span>{% endfor %}
-      {% if r.records_truncated %}<span class="note">…and more (showing first {{ r.records|length }})</span>{% endif %}
+      <div class="record-entries">
+        {% for rec in r.records %}<span class="record-entry"><a href="{{ rec.url }}" target="_blank" rel="noopener">{{ rec.oid }}</a>{% if rec.header_url %} <a href="{{ rec.header_url }}" target="_blank" rel="noopener" class="header-link">headers</a>{% endif %}</span>{% endfor %}
+        {% if r.records_truncated %}<span class="note">…and more (showing first {{ r.records|length }})</span>{% endif %}
+      </div>
     </details>
 
     {% if r.sky_finder_url %}
@@ -3192,25 +3195,39 @@ def _triage_redirect(offset: int, **params) -> Response:
 
 # Every visitor used to see the literal same fixed slice of triage_queue in
 # the same order every time (a plain SQL ORDER BY over a small, infrequently
-# -changing precomputed table -- see TRIAGE_QUEUE_QUERY's own LIMIT 200 in
-# scripts/export_to_parquet.py) -- confirmed this meant everyone triaging on
-# a given day just worked through the identical sequence of records.
-# Reordered here instead, once per request, keyed off a random per-visitor
-# seed cookie (TRIAGE_SEED_COOKIE) so different visitors fan out across the
-# pool -- named groups still always sort before nameless ones (matches
-# triage_queue's own priority, no reason to ever invert that), but within
-# each of those two tiers the order is a weighted random shuffle
+# -changing precomputed table -- see TRIAGE_QUEUE_QUERY's own LIMIT
+# TRIAGE_QUEUE_TOP_N in scripts/export_to_parquet.py) -- confirmed this meant
+# everyone triaging on a given day just worked through the identical sequence
+# of records. Reordered here instead, once per request, keyed off a random
+# per-visitor seed cookie (TRIAGE_SEED_COOKIE) so different visitors fan out
+# across the pool -- named groups still always sort before nameless ones
+# (matches triage_queue's own priority, no reason to ever invert that), but
+# within each of those two tiers the order is a weighted random shuffle
 # (Efraimidis-Spirakis weighted sampling: key = -ln(u)/weight, sorted
 # ascending) so a group with many underlying records is *more likely* to
 # surface early without being pinned to the exact same n_records-DESC order
-# every single time. The whole pool is at most TRIAGE_QUEUE_TOP_N (200) rows
-# -- cheap to pull in full and reorder in Python rather than pushing this
-# into SQL.
-def _shuffle_triage_pool(pool: list[dict], seed: str) -> list[dict]:
+# every single time. TRIAGE_QUEUE_TOP_N (now in the low thousands rather than
+# 200) is cheap to pull in full and reorder in Python rather than pushing
+# this into SQL.
+#
+# votes_by_group halves a group's weight per distinct submitter who's already
+# classified it (0 votes -> full weight, 1 -> half, 2 -- the eventual target
+# of "just get a couple independent eyes on each name" -- -> a quarter, and
+# so on) so groups that already have enough independent eyes on them fade
+# from rotation and under-covered ones surface more -- a soft nudge rather
+# than a hard cutoff, since nothing here excludes a name outright once it
+# hits that target (submitters can disagree, and a third opinion is still
+# useful; there's also no quorum-consuming apply step wired up yet for this
+# to gate, see the /triage page's own note).
+def _shuffle_triage_pool(pool: list[dict], seed: str, votes_by_group: dict[tuple, int]) -> list[dict]:
     rng = random.Random(seed)
 
+    def weight(item: dict) -> float:
+        votes = votes_by_group.get((item["archive_code"], item["group_key"]), 0)
+        return max(item["n_records"], 1) / (2 ** votes)
+
     def weighted_shuffle(items: list[dict]) -> list[dict]:
-        keyed = [(-math.log(rng.random()) / max(item["n_records"], 1), item) for item in items]
+        keyed = [(-math.log(rng.random()) / weight(item), item) for item in items]
         keyed.sort(key=lambda pair: pair[0])
         return [item for _, item in keyed]
 
@@ -3280,6 +3297,16 @@ def triage():
         group_key = name if name else f"obs:{s.get('archive_obs_id')}"
         submissions_by_group[(s.get("archive_code"), group_key)].append(s)
 
+    # Distinct-submitter count per group, independent of which submitter is
+    # asking -- feeds _shuffle_triage_pool's weighting below so names that
+    # already have several independent votes fade from everyone's rotation,
+    # not just this submitter's (that's the submitter_key filter right after
+    # this, which is a per-visitor exclusion rather than a shared signal).
+    votes_by_group = {
+        key: len({(s.get("submitter") or "").strip().casefold() for s in subs if (s.get("submitter") or "").strip()})
+        for key, subs in submissions_by_group.items()
+    }
+
     # Step 2 of 2: filter out anything this submitter already voted on.
     # Case-insensitive/trimmed compare since "handle" is free text, not an
     # account -- catches the common "Zach" vs "zach" variance without
@@ -3294,7 +3321,7 @@ def triage():
     ]
 
     seed = request.cookies.get(TRIAGE_SEED_COOKIE) or secrets.token_hex(8)
-    ordered = _shuffle_triage_pool(pool, seed)
+    ordered = _shuffle_triage_pool(pool, seed, votes_by_group)
     total = len(ordered)
 
     try:

@@ -524,8 +524,18 @@ LIMIT {SKIPPED_TOP_N}
 # back to one singleton group per record via its archive_obs_id -- otherwise
 # every nameless row in an archive would collapse into a single enormous
 # group, which is exactly the shape that caused the OOM in the first place.
+# TRIAGE_QUEUE_TOP_N bounds how many distinct (archive, name) groups are
+# exported, not how many the aggregate has to scan -- the GROUP BY above
+# already materializes all ~900k groups before this LIMIT applies, so raising
+# it doesn't add meaningfully to the query's cost, only to the size of the
+# small pool webapp.app's _shuffle_triage_pool reorders per visitor. Raised
+# from 200 to spread contributors across more distinct names instead of
+# everyone converging on the identical top-200-by-priority set every day --
+# webapp.app's per-request weighting (favoring groups with fewer independent
+# votes so far) does the rest of that work, but it can only rebalance within
+# whatever this export already exposes.
 TRIAGE_QUEUE_MAX_RECORDS = 50
-TRIAGE_QUEUE_TOP_N = 200
+TRIAGE_QUEUE_TOP_N = 2000
 
 TRIAGE_QUEUE_QUERY = f"""
 WITH ranked AS (
