@@ -100,7 +100,7 @@ WINDOW_DAYS = 7
 
 # Not under public_html (morgan and joy share that NFS home, and Apache
 # serves it publicly) -- this is scratch space, not something to publish.
-CACHE_DIR = os.environ.get("SDSS_LEGACY_OPTICAL_CACHE_DIR", os.path.expanduser("~/.cache/spectra_database"))
+CACHE_DIR = os.environ.get("SDSS_LEGACY_OPTICAL_CACHE_DIR", os.path.expanduser("~/.cache/spectra_pointer"))
 RAW_FITS_PATH = os.path.join(CACHE_DIR, "sdss_allspec_dr20.fits")  # transient -- deleted after distilling
 LEGACY_CACHE_PATH = os.path.join(CACHE_DIR, "sdss_legacy_boss.parquet")  # what fetch() actually reads
 

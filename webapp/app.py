@@ -363,7 +363,7 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool)
         return _csv_response(
             ["gaia_source_id", "known_as", "ra", "dec", "sep_arcsec", "phot_g_mean_mag"],
             rows,
-            f"spectra_database_radial_ra{ra_val:.5f}_dec{dec_val:.5f}_r{radius_arcmin:g}arcmin.csv",
+            f"spectra_pointer_radial_ra{ra_val:.5f}_dec{dec_val:.5f}_r{radius_arcmin:g}arcmin.csv",
         )
 
     return _render_radial(ra_str, dec_str, str(radius_arcmin), radial_results=rows, radius_display=radius_arcmin)
@@ -414,6 +414,11 @@ SHARED_STYLE = """
     nav.tabs a { text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #000; border-bottom: none;
                  margin-right: 0.3rem; color: #000; }
     nav.tabs a.active { font-weight: bold; background: #000; color: #fff; }
+    .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .site-header h1 { margin: 0; }
+    .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 2px dashed #000;
+                         border-radius: 4px; display: flex; align-items: center; justify-content: center;
+                         font-size: 0.65rem; font-weight: bold; color: #666; text-align: center; }
 """
 
 PAGE_TEMPLATE = """
@@ -421,14 +426,17 @@ PAGE_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database</title>
+  <title>The Spectra Pointer</title>
   <style>""" + SHARED_STYLE + """
     #wavelength-plot { width: 100%; margin-top: 0.5rem; }
   </style>
   {% if wavelength_chart %}<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>{% endif %}
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <p class="note">A numeric search is interpreted as a Gaia source_id or a Bright Star Catalogue (HR) number.</p>
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
@@ -757,7 +765,7 @@ def search():
             ["query", "source_id", "status", "known_as",
              "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status", "archive_url"],
             raw_holdings,
-            f"spectra_database_holdings_{source_id if source_id is not None else star['star_id']}.csv",
+            f"spectra_pointer_holdings_{source_id if source_id is not None else star['star_id']}.csv",
         )
 
     holdings = _group_holdings(raw_holdings)
@@ -778,14 +786,17 @@ CMD_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Color-Magnitude Diagram</title>
+  <title>The Spectra Pointer — Color-Magnitude Diagram</title>
   <style>""" + SHARED_STYLE + """
     #cmd-plot { width: 100%; height: 700px; margin-top: 1rem; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <p class="note">Gaia color-magnitude diagram — the {{ "{:,}".format(sample_size) }} most-observed tracked stars with valid BP-RP color and a positive parallax (needed for absolute magnitude). Click a point to see that star's holdings.</p>
   {% if bp_rp %}
     <div id="cmd-plot"></div>
@@ -858,14 +869,17 @@ SKY_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Sky Map</title>
+  <title>The Spectra Pointer — Sky Map</title>
   <style>""" + SHARED_STYLE + """
     #sky-plot { width: 100%; height: 700px; margin-top: 1rem; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <p class="note">An Aitoff-projection all-sky map of a random sample of up to {{ "{:,}".format(sample_size) }} tracked stars — brighter stars (lower G mag) drawn larger, like a real star chart. The gray band is the Galactic plane (computed, not a photograph — see the note in the page source). Scroll to zoom, click a point to see that star's holdings.</p>
   {% if x %}
     <div id="sky-plot"></div>
@@ -937,14 +951,17 @@ TIMEPLOTS_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Leaderboard</title>
+  <title>The Spectra Pointer — Leaderboard</title>
   <style>""" + SHARED_STYLE + """
     #cumulative-plot, #period-plot { width: 100%; height: 500px; margin-top: 1rem; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <p class="note">Fixed 6-month periods. At each period, two top-10 lists are computed: the 10 stars with the most cumulative (all-time-so-far) observations, and the 10 with the most observations within that period alone. Every star that ever broke into either list, at any period, gets a line in both charts below — so there can be more than 10 lines total, and a line can start partway through the timeline (whenever that star first qualified) and stop appearing again once it drops out of that period's top 10, rather than dragging a stale line across the whole chart. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see Stats below) can be higher than what's reflected here. Log scale, so a period with zero observations for a star just leaves a gap rather than a dip to zero.</p>
   <h2>Cumulative observations</h2>
   {% if cumulative_traces %}
@@ -1528,7 +1545,7 @@ INSTRUMENTS_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Instruments</title>
+  <title>The Spectra Pointer — Instruments</title>
   <style>""" + SHARED_STYLE + """
     #instrument-treemap, #instrument-sky { width: 100%; height: 700px; margin-top: 1rem; }
     #overlap-heatmap { width: 100%; height: 650px; margin-top: 1rem; }
@@ -1543,7 +1560,10 @@ INSTRUMENTS_TEMPLATE = """
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <h2>Holdings by archive and instrument</h2>
   <p class="note">Size = number of holdings. Click a box to zoom into an archive's instruments.</p>
   {% if treemap_labels %}
@@ -2076,11 +2096,14 @@ ARCHIVE_STATUS_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Archive Status</title>
+  <title>The Spectra Pointer — Archive Status</title>
   <style>""" + SHARED_STYLE + """</style>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Leaderboard tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them. See the Instruments tab for the per-archive instrument breakdown, including resolving power.</p>
   <table>
     <tr>
@@ -2178,11 +2201,14 @@ INFO_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — More Info</title>
+  <title>The Spectra Pointer — More Info</title>
   <style>""" + SHARED_STYLE + """</style>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <h2>How matching works</h2>
   <p>Every archive record goes through up to three match methods, tried in this order, and the first one that succeeds wins:</p>
   <ol>
@@ -2268,14 +2294,17 @@ CITATION_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Citation</title>
+  <title>The Spectra Pointer — Citation</title>
   <style>""" + SHARED_STYLE + """</style>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <p>This page is currently under development and does not have a citable DOI. Once created, this page will link to the direct citation.</p>
   <p>If you make use of this page for your research, please use the following acknowledgement:</p>
-  <p>Source code: <a href="https://github.com/zachway/spectra_database" target="_blank" rel="noopener">github.com/zachway/spectra_database</a></p>
+  <p>Source code: <a href="https://github.com/zachway/spectra_pointer" target="_blank" rel="noopener">github.com/zachway/spectra_pointer</a></p>
 </body>
 </html>
 """
@@ -2491,7 +2520,7 @@ def batch_search():
             ["query", "source_id", "status", "known_as",
              "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status", "archive_url"],
             csv_rows,
-            "spectra_database_batch_lookup.csv",
+            "spectra_pointer_batch_lookup.csv",
         )
 
     note = f"{len(entries)} entries looked up."
@@ -2867,13 +2896,16 @@ TRIAGE_HEADER_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — FITS header</title>
+  <title>The Spectra Pointer — FITS header</title>
   <style>""" + SHARED_STYLE + """
     pre.fits-header { background: #f4f4f4; padding: 0.8rem; overflow-x: auto; font-size: 0.85rem; }
   </style>
 </head>
 <body>
-  <h1>Spectra Database</h1>
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>
   <h2>FITS header</h2>
   <p class="note">Read directly from <a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a>
     via a bounded range request -- the file itself was never downloaded.</p>
@@ -2905,7 +2937,7 @@ TRIAGE_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Triage</title>
+  <title>The Spectra Pointer — Triage</title>
   <style>""" + SHARED_STYLE + """
     .triage-row { border: 1px solid #000; padding: 0.6rem 0.8rem; margin-top: 1rem; }
     .triage-row form { margin-top: 0.5rem; }
@@ -2925,7 +2957,10 @@ TRIAGE_TEMPLATE = """
   </style>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <h2>Triage: skipped records</h2>
   <img class="mood-image" src="/static/triage_mood.jpg" alt="how the triage queue feels sometimes">
   <p class="note">Triaging as <b>{{ submitter }}</b> (<a href="/triage?change_submitter=1">not you?</a>) --
@@ -3059,11 +3094,14 @@ TRIAGE_GATE_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Spectra Database — Triage</title>
+  <title>The Spectra Pointer — Triage</title>
   <style>""" + SHARED_STYLE + """</style>
 </head>
 <body>
-  <h1>Spectra Database</h1>""" + NAV_HTML + """
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <div class="logo-placeholder" title="Logo placeholder — swap for real logo">LOGO</div>
+  </div>""" + NAV_HTML + """
   <h2>Triage: skipped records</h2>
   <p class="note">
     Enter the name/handle you'll be submitting classifications under. It's

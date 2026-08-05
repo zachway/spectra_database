@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-cd /nfs/morgan/users/way/spectra_database
+cd /nfs/morgan/users/way/spectra_pointer
 source venv/bin/activate
 
 export DATABASE_URL="postgresql:///spectra_db?host=/tmp"

@@ -1,4 +1,4 @@
-# Spectra Database
+# The Spectra Pointer
 
 A cross-match database and search tool that unifies stellar spectroscopy
 holdings across more than 30 independent astronomical archives (ESO, SDSS,
@@ -17,7 +17,7 @@ This information is necessary for creating novel research, combing
 through archival data, and writing proposals for time on large 
 telescopes with limited budgets.
 
-Spectra Database solves this by running an independent sync process per
+The Spectra Pointer solves this by running an independent sync process per
 archive (39 are currently implemented) that discovers spectroscopic
 observations and cross-matches each one to a canonical Gaia DR3 `source_id` 
 — first by a named identifier when the archive publishes one (via
@@ -28,7 +28,7 @@ researcher can query by Gaia `source_id` or common name to get a
 consolidated, deduplicated list of every archive holding a spectrum of
 that star, along with pointers back to the original data in each home
 archive. A public search webapp (built on this database) is deployed at
-<https://spectra-database-997472993697.us-central1.run.app>. This is 
+<https://spectra-pointer-997472993697.us-central1.run.app>. This is 
 software is developed to be reusable infrastructure for anybody,
 using no proprietary access and minimal personal keys.
 
@@ -60,8 +60,8 @@ positional cross-matching; not packaged for conda-forge or Homebrew as of
 this writing, must be built from source).
 
 ```bash
-git clone https://github.com/zachway/spectra_database.git
-cd spectra_database
+git clone https://github.com/zachway/spectra_pointer.git
+cd spectra_pointer
 pip install -r requirements.txt
 
 # create the database and schema
@@ -110,14 +110,14 @@ pytest tests/
 The webapp is deployed on Google Cloud Run from the root `Dockerfile`:
 
 ```bash
-gcloud run deploy spectra-database --source . --region us-central1 --allow-unauthenticated
+gcloud run deploy spectra-pointer --source . --region us-central1 --allow-unauthenticated
 ```
 
 ## Contributing
 
 Bug reports and pull requests are welcome via
-[GitHub Issues](https://github.com/zachway/spectra_database/issues) and
-[Pull Requests](https://github.com/zachway/spectra_database/pulls). If
+[GitHub Issues](https://github.com/zachway/spectra_pointer/issues) and
+[Pull Requests](https://github.com/zachway/spectra_pointer/pulls). If
 you're adding support for a new archive, take a look at an existing
 implementation under `sync/archives/` as a template — each one implements
 a `fetch()` generator that the shared matcher and runner in `sync/` drive

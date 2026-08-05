@@ -63,7 +63,7 @@ SPECTRUM_URL = (
 
 # Not under public_html (morgan and joy share that NFS home, and Apache
 # serves it publicly) -- this is scratch space, not something to publish.
-CACHE_DIR = os.environ.get("SDSS_V_OPTICAL_CACHE_DIR", os.path.expanduser("~/.cache/spectra_database"))
+CACHE_DIR = os.environ.get("SDSS_V_OPTICAL_CACHE_DIR", os.path.expanduser("~/.cache/spectra_pointer"))
 SPALL_CACHE_PATH = os.path.join(CACHE_DIR, "sdss_v_spall_lite.fits.gz")
 
 

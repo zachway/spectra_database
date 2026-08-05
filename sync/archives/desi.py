@@ -63,7 +63,7 @@ _FITS_TO_NUMPY = {"D": ">f8", "E": ">f4", "K": ">i8", "J": ">i4", "I": ">i2", "B
 # serves it publicly) -- this is a multi-GB scratch cache, not something to
 # publish. Overridable for local dev / testing without touching morgan's
 # real cache.
-CACHE_DIR = os.environ.get("DESI_CACHE_DIR", os.path.expanduser("~/.cache/spectra_database"))
+CACHE_DIR = os.environ.get("DESI_CACHE_DIR", os.path.expanduser("~/.cache/spectra_pointer"))
 RV_CACHE_PATH = os.path.join(CACHE_DIR, "desi_mwsall_iron_rvtab.dat")
 GAIA_CACHE_PATH = os.path.join(CACHE_DIR, "desi_mwsall_iron_gaia.dat")
 
