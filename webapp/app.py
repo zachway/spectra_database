@@ -2088,25 +2088,43 @@ def instruments_page():
     # log(a+b)) -- that made an archive's box size track its instrument
     # *count* almost as much as its holdings total, so an archive with many
     # small instruments could out-size one dominated by a single huge
-    # instrument. With 'total', each archive's own value is authoritative
-    # for comparing it against other archives, while its instrument leaves
-    # are still apportioned within it by their relative log values, so small
-    # instruments stay visible without corrupting the archive-level sizing.
-    treemap_labels, treemap_parents, treemap_values, treemap_counts = [], [], [], []
+    # instrument.
+    #
+    # 'total' mode requires each node's declared value to equal the sum of
+    # its children's declared values -- Plotly doesn't renormalize a
+    # mismatch itself, it just breaks the layout (an archive with a lot of
+    # small instruments can have its children's raw log10(n+1) values sum to
+    # many times the archive's own log10(total+1), which blanked the whole
+    # chart). So each instrument leaf's value is its log10(n+1) weight
+    # rescaled to its share of the archive's own value -- this keeps
+    # instruments' relative sizes within an archive exactly as before
+    # (still log-scaled, so small ones stay visible next to big ones) while
+    # making the leaves sum to precisely the archive's true-total value.
     archive_totals: dict[str, int] = defaultdict(int)
     for r in rows:
         archive_totals[r["display_name"]] += r["n"]
+    leaf_weights_by_archive: dict[str, list[float]] = defaultdict(list)
+    for r in rows:
+        leaf_weights_by_archive[r["display_name"]].append(math.log10(r["n"] + 1))
+    weight_sum_by_archive = {a: sum(ws) for a, ws in leaf_weights_by_archive.items()}
+
+    treemap_labels, treemap_parents, treemap_values, treemap_counts = [], [], [], []
     seen_archives = set()
     for r in rows:
-        if r["display_name"] not in seen_archives:
-            treemap_labels.append(r["display_name"])
+        archive = r["display_name"]
+        archive_value = math.log10(archive_totals[archive] + 1)
+        if archive not in seen_archives:
+            treemap_labels.append(archive)
             treemap_parents.append("")
-            treemap_values.append(math.log10(archive_totals[r["display_name"]] + 1))
-            treemap_counts.append(archive_totals[r["display_name"]])
-            seen_archives.add(r["display_name"])
-        treemap_labels.append(f"{r['display_name']} / {r['instrument']}")
-        treemap_parents.append(r["display_name"])
-        treemap_values.append(math.log10(r["n"] + 1))
+            treemap_values.append(archive_value)
+            treemap_counts.append(archive_totals[archive])
+            seen_archives.add(archive)
+        weight_sum = weight_sum_by_archive[archive]
+        leaf_weight = math.log10(r["n"] + 1)
+        leaf_value = archive_value * leaf_weight / weight_sum if weight_sum > 0 else 0
+        treemap_labels.append(f"{archive} / {r['instrument']}")
+        treemap_parents.append(archive)
+        treemap_values.append(leaf_value)
         treemap_counts.append(r["n"])
 
     instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
