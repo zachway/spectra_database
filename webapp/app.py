@@ -857,22 +857,35 @@ CMD_TEMPLATE = """
             // Anchored to Mamajek's dwarf color/Teff table (Bp-Rp column --
             // https://github.com/emamajek/SpectralType/blob/master/EEM_dwarf_UBVIJHK_colors_Teff.txt,
             // 2024.05.15) rather than a generic diverging palette, so the
-            // stops land on real spectral-type colors instead of an arbitrary
-            // gradient: O5V (blue), G5V (green), K5V (orange), M5V (red) --
-            // this app's own validated categorical blue/green/orange/red, not
-            // new hex picks. O5V has no tabulated Bp-Rp in that table (Gaia
-            // BP/RP isn't calibrated that hot) -- extrapolated from the
-            // B9V-F0V rows, where both B-V and Bp-Rp are tabulated, via a
-            // linear B-V -> Bp-Rp fit (slope 1.36, intercept -0.028) applied
-            // to O5V's B-V of -0.323. cmin/cmax are the O5V/M5V anchors
-            // themselves, so the whole O class saturates to this blue and the
-            // whole M class (out through the latest, reddest M dwarfs) to
-            // this red rather than clipping partway through either.
+            // stops land on real spectral-type colors instead of an
+            // arbitrary gradient. O5V/G5V/K5V/M5V are this app's own
+            // validated categorical blue/green/orange/red (not new hex
+            // picks); B5V/A5V/F5V fill the O-to-G gap with a genuinely
+            // smooth transition rather than one giant blue-to-green jump
+            // covering a third of the scale -- each is a straight HLS lerp
+            // between the O5V and G5V anchors, weighted by that type's own
+            // fractional position in the O5V-G5V Bp-Rp span (not evenly
+            // spaced), so a densely-populated stretch like early-to-mid
+            // F still gets proportionally graded color rather than being
+            // squeezed into an even 1/3-of-the-way step. G5V-K5V-M5V stay a
+            // plain 3-point interpolation since OBAFGKM has no class
+            // between any of those three. O5V has no tabulated Bp-Rp in
+            // that table (Gaia BP/RP isn't calibrated that hot) --
+            // extrapolated from the B9V-F0V rows, where both B-V and Bp-Rp
+            // are tabulated, via a linear B-V -> Bp-Rp fit (slope 1.36,
+            // intercept -0.028); B5V is extrapolated the same way. cmin/cmax
+            // are the O5V/M5V anchors themselves, so the whole O class
+            // saturates to this blue and the whole M class (out through the
+            // latest, reddest M dwarfs) to this red rather than clipping
+            // partway through either.
             colorscale: [
-              [0, '#2a78d6'],     // O5V, Bp-Rp ~ -0.47 (extrapolated)
+              [0,    '#2a78d6'],  // O5V, Bp-Rp ~ -0.47 (extrapolated)
+              [0.06, '#1f9bcb'],  // B5V, Bp-Rp ~ -0.24 (extrapolated)
+              [0.17, '#0fb28c'],  // A5V, Bp-Rp = 0.194
+              [0.28, '#059732'],  // F5V, Bp-Rp = 0.587
               [0.35, '#008300'],  // G5V, Bp-Rp = 0.85
               [0.50, '#eb6834'],  // K5V, Bp-Rp = 1.43
-              [1, '#e34948'],     // M5V, Bp-Rp = 3.35
+              [1,    '#e34948'],  // M5V, Bp-Rp = 3.35
             ],
             cmin: -0.47, cmax: 3.35,
             line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
