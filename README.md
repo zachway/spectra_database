@@ -18,7 +18,7 @@ through archival data, and writing proposals for time on large
 telescopes with limited budgets.
 
 The Spectra Pointer solves this by running an independent sync process per
-archive (39 are currently implemented) that discovers spectroscopic
+archive (38 are currently implemented) that discovers spectroscopic
 observations and cross-matches each one to a canonical Gaia DR3 `source_id` 
 — first by a named identifier when the archive publishes one (via
 the [SIMBAD database](https://simbad.cds.unistra.fr/simbad/), falling back

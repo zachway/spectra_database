@@ -52,10 +52,12 @@ from sync.archives import (
     harpsn_tng,
     hermes_mercator,
     ing,
+    irtf_spex,
     koa,
     lamost,
     lamost_mrs,
     lbt,
+    lco_floyds,
     lick,
     mast,
     mast_jwst,
@@ -111,6 +113,8 @@ ARCHIVES = {
     "hermes_mercator": hermes_mercator.fetch,
     "bess": bess.fetch,
     "gaia_rvs": gaia_rvs.fetch,
+    "irtf_spex": irtf_spex.fetch,
+    "lco_floyds": lco_floyds.fetch,
 }
 
 
