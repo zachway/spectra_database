@@ -52,6 +52,7 @@ from sync.archives import (
     gtc,
     harpsn_tng,
     hermes_mercator,
+    iacob,
     ing,
     irtf_ishell,
     irtf_legacy,
@@ -76,6 +77,7 @@ from sync.archives import (
     sdss_v_apogee,
     sdss_v_optical,
     sophie,
+    subaru_moircs,
     xmm,
 )
 from sync.runner import run_sync
@@ -128,6 +130,8 @@ ARCHIVES = {
     "irtf_legacy": irtf_legacy.fetch,
     "lco_floyds": lco_floyds.fetch,
     "lco_nres": lco_nres.fetch,
+    "iacob": iacob.fetch,
+    "subaru_moircs": subaru_moircs.fetch,
     "xmm": xmm.fetch,
 }
 
