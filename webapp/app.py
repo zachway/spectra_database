@@ -1491,6 +1491,18 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('SDSS-V — APOGEE', 'APOGEE'): 'R ≈ 22,500',
     ('SDSS-V — Optical', 'SDSS-V/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
     ('SOPHIE (OHP)', 'SOPHIE'): 'R ≈ 39,000–75,000 (HE/HR mode)',
+    # X-ray transmission gratings -- resolving power is set by the grating,
+    # not the detector recording the dispersed light, so all detector
+    # combinations of a given grating share one value. Deliberately absent
+    # from INSTRUMENT_WAVELENGTH_RANGE_NM below -- see that dict's own
+    # comment on why.
+    ('Chandra X-ray Observatory', 'HETG (ACIS-S)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'HETG (ACIS-I)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'HETG (HRC-I)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (HRC-S)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (ACIS-S)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (ACIS-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (HRC-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
 }
 
 # Wavelength coverage (nm, vacuum/air distinction not tracked -- published
@@ -1505,7 +1517,10 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
 # couldn't confirm a real published range for (e.g. CFHT's GECKO, PYTHIAS,
 # HERZBERG, OSIS, PUMA, SISFP, ISIS; Gemini's CIRPASS/OSCIR; NOIRLab's sami;
 # ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
-# HST's COS-STIS combined mode) are left out rather than guessed -- a
+# HST's COS-STIS combined mode; Chandra's HETG/LETG, whose real ~0.1-3nm
+# X-ray coverage would be invisible or need a second log-scale axis on a
+# chart built for this project's optical/IR archives) are left out rather
+# than guessed -- a
 # missing key just means that instrument's bar doesn't render, the same
 # graceful-degradation shape as INSTRUMENT_RESOLVING_POWER's own "—". A few
 # instruments (GALAH/HERMES, LAMOST-MRS) are non-contiguous multi-band
