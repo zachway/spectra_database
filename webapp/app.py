@@ -1497,6 +1497,10 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('SDSS-V — APOGEE', 'APOGEE'): 'R ≈ 22,500',
     ('SDSS-V — Optical', 'SDSS-V/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
     ('SOPHIE (OHP)', 'SOPHIE'): 'R ≈ 39,000–75,000 (HE/HR mode)',
+    ('SVO CAB Stellar Libraries', 'MILES'): 'R ≈ 2,000 (2.50 Å FWHM)',
+    ('SVO CAB Stellar Libraries', 'STELIB'): 'R ≈ 2,000 (~3 Å FWHM)',
+    ('SVO CAB Stellar Libraries', 'XSL'): 'R ≈ 8,000–11,000 (arm-dependent)',
+    ('SVO CAB Stellar Libraries', 'CaT'): 'R ≈ 5,000–6,000 (1.5 Å FWHM)',
 }
 
 # Wavelength coverage (nm, vacuum/air distinction not tracked -- published
@@ -1648,6 +1652,10 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('SDSS-V — APOGEE', 'APOGEE'): (1514, 1696),
     ('SDSS-V — Optical', 'SDSS-V/BOSS'): (360, 1040),
     ('SOPHIE (OHP)', 'SOPHIE'): (387, 694),
+    ('SVO CAB Stellar Libraries', 'MILES'): (352.5, 750.0),
+    ('SVO CAB Stellar Libraries', 'STELIB'): (320.0, 950.0),
+    ('SVO CAB Stellar Libraries', 'XSL'): (300.0, 2480.0),
+    ('SVO CAB Stellar Libraries', 'CaT'): (834.8, 882.8),
 }
 
 INSTRUMENTS_TEMPLATE = """
