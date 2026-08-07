@@ -68,6 +68,7 @@ from sync.archives import (
     noirlab,
     oirsa,
     ondrejov,
+    polarbase,
     rave,
     salt_hrs,
     sdss_legacy_optical,
@@ -123,6 +124,7 @@ ARCHIVES = {
     "lco_floyds": lco_floyds.fetch,
     "lco_nres": lco_nres.fetch,
     "ondrejov": ondrejov.fetch,
+    "polarbase": polarbase.fetch,
 }
 
 
