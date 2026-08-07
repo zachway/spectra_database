@@ -1424,6 +1424,12 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): 'R ≈ 600–8,000 (grating-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): 'R ≈ 600–8,000 (grating-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): 'R ≈ 600–8,000 (grating-dependent)',
+    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (SASS)'): 'R ≈ 60–130 (SL/LL low-res modules)',
+    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (Std Stars)'): 'R ≈ 60–130 (SL/LL low-res modules)',
+    ('IRSA Space-Mission Stellar Collections', 'ISO/SWS'): 'R ≈ 1,000–2,500 (grating mode)',
+    ('IRSA Space-Mission Stellar Collections', 'IRAS/LRS'): 'R ≈ 20–60',
+    ('IRSA Space-Mission Stellar Collections', 'SOFIA/EXES'): 'R ≈ 3,000–100,000 (mode-dependent)',
+    ('IRSA Space-Mission Stellar Collections', 'IRTF/MEarth'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
     ('IRTF SpeX (via IRSA)', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
     ('IRTF iSHELL (via IRSA)', 'iSHELL'): 'R ≈ 80,000 (0.375" slit)',
     ('IRTF Legacy Archive', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
@@ -1503,6 +1509,10 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('SDSS-V — APOGEE', 'APOGEE'): 'R ≈ 22,500',
     ('SDSS-V — Optical', 'SDSS-V/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
     ('SOPHIE (OHP)', 'SOPHIE'): 'R ≈ 39,000–75,000 (HE/HR mode)',
+    ('SVO CAB Stellar Libraries', 'MILES'): 'R ≈ 2,000 (2.50 Å FWHM)',
+    ('SVO CAB Stellar Libraries', 'STELIB'): 'R ≈ 2,000 (~3 Å FWHM)',
+    ('SVO CAB Stellar Libraries', 'XSL'): 'R ≈ 8,000–11,000 (arm-dependent)',
+    ('SVO CAB Stellar Libraries', 'CaT'): 'R ≈ 5,000–6,000 (1.5 Å FWHM)',
     # X-ray transmission gratings -- resolving power is set by the grating,
     # not the detector recording the dispersed light, so all detector
     # combinations of a given grating share one value. Deliberately absent
@@ -1612,6 +1622,12 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): (300, 550),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): (500, 1000),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): (300, 550),
+    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (SASS)'): (5200, 38000),
+    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (Std Stars)'): (5200, 38000),
+    ('IRSA Space-Mission Stellar Collections', 'ISO/SWS'): (2400, 45200),
+    ('IRSA Space-Mission Stellar Collections', 'IRAS/LRS'): (7700, 22600),
+    ('IRSA Space-Mission Stellar Collections', 'SOFIA/EXES'): (4500, 28300),
+    ('IRSA Space-Mission Stellar Collections', 'IRTF/MEarth'): (700, 5300),
     ('IRTF SpeX (via IRSA)', 'SpeX'): (700, 5300),
     ('IRTF iSHELL (via IRSA)', 'iSHELL'): (1060, 5300),
     ('IRTF Legacy Archive', 'SpeX'): (700, 5300),
@@ -1676,6 +1692,10 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('SDSS-V — APOGEE', 'APOGEE'): (1514, 1696),
     ('SDSS-V — Optical', 'SDSS-V/BOSS'): (360, 1040),
     ('SOPHIE (OHP)', 'SOPHIE'): (387, 694),
+    ('SVO CAB Stellar Libraries', 'MILES'): (352.5, 750.0),
+    ('SVO CAB Stellar Libraries', 'STELIB'): (320.0, 950.0),
+    ('SVO CAB Stellar Libraries', 'XSL'): (300.0, 2480.0),
+    ('SVO CAB Stellar Libraries', 'CaT'): (834.8, 882.8),
 }
 
 INSTRUMENTS_TEMPLATE = """
