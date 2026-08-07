@@ -1418,6 +1418,8 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('Gemini Observatory Archive — IGRINS', 'IGRINS'): 'R ≈ 45,000',
     ('HARPS-N (TNG)', 'HARPS-N'): 'R ≈ 115,000',
     ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): 'R ≈ 25,000–86,000 (mode-dependent)',
+    ('IACOB Spectroscopic Database (IAC)', 'MERCATOR'): 'R ≈ 85,000',
+    ('IACOB Spectroscopic Database (IAC)', 'NOT'): 'R ≈ 25,000–67,000 (FIES mode-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): 'R ≈ 600–8,000 (grating-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): 'R ≈ 600–8,000 (grating-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): 'R ≈ 600–8,000 (grating-dependent)',
@@ -1483,6 +1485,7 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('MAST — JWST', 'MIRI/IMAGE'): 'n/a (imaging)',
     ('MAST — JWST', 'NIRISS/SOSS'): 'R ≈ 700',
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): 'R ≈ 45,000–160,000 (slit-dependent)',
+    ('NAOJ (Subaru MOIRCS, via JVO)', 'MOIRCS'): 'R ≈ 460–3,500 (grism-dependent: zJ_500/HK_500 low-res, LS_J/LS_H/VB_K/VPH-Y moderate-res)',
     ('NEID (WIYN, Kitt Peak)', 'NEID (HR)'): 'R ≈ 110,000 (High Resolution mode)',
     ('NEID (WIYN, Kitt Peak)', 'NEID (HE)'): 'R ≈ 70,000–90,000 (High Efficiency mode)',
     ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): 'R ≈ 25,000–67,000 (fiber-dependent)',
@@ -1510,6 +1513,18 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('SVO CAB Stellar Libraries', 'STELIB'): 'R ≈ 2,000 (~3 Å FWHM)',
     ('SVO CAB Stellar Libraries', 'XSL'): 'R ≈ 8,000–11,000 (arm-dependent)',
     ('SVO CAB Stellar Libraries', 'CaT'): 'R ≈ 5,000–6,000 (1.5 Å FWHM)',
+    # X-ray transmission gratings -- resolving power is set by the grating,
+    # not the detector recording the dispersed light, so all detector
+    # combinations of a given grating share one value. Deliberately absent
+    # from INSTRUMENT_WAVELENGTH_RANGE_NM below -- see that dict's own
+    # comment on why.
+    ('Chandra X-ray Observatory', 'HETG (ACIS-S)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'HETG (ACIS-I)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'HETG (HRC-I)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (HRC-S)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (ACIS-S)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (ACIS-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
+    ('Chandra X-ray Observatory', 'LETG (HRC-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
     ('XMM-Newton RGS', 'RGS1'): 'R ≈ 150–800 (first order, wavelength-dependent)',
     ('XMM-Newton RGS', 'RGS2'): 'R ≈ 150–800 (first order, wavelength-dependent)',
 }
@@ -1526,9 +1541,11 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
 # couldn't confirm a real published range for (e.g. CFHT's GECKO, PYTHIAS,
 # HERZBERG, OSIS, PUMA, SISFP, ISIS; Gemini's CIRPASS/OSCIR; NOIRLab's sami;
 # ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
-# HST's COS-STIS combined mode; XMM-Newton RGS1/RGS2, whose real ~1.2-3.8nm
-# X-ray band would be invisible on this chart's linear optical/IR scale)
-# are left out rather than guessed -- a
+# HST's COS-STIS combined mode; Chandra's HETG/LETG, whose real ~0.1-3nm
+# X-ray coverage would be invisible or need a second log-scale axis on a
+# chart built for this project's optical/IR archives; XMM-Newton RGS1/RGS2,
+# whose real ~1.2-3.8nm X-ray band would be invisible on this chart's linear
+# optical/IR scale) are left out rather than guessed -- a
 # missing key just means that instrument's bar doesn't render, the same
 # graceful-degradation shape as INSTRUMENT_RESOLVING_POWER's own "—". A few
 # instruments (GALAH/HERMES, LAMOST-MRS) are non-contiguous multi-band
@@ -1599,6 +1616,8 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('Gemini Observatory Archive — IGRINS', 'IGRINS'): (1450, 2450),
     ('HARPS-N (TNG)', 'HARPS-N'): (383, 693),
     ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): (377, 900),
+    ('IACOB Spectroscopic Database (IAC)', 'MERCATOR'): (377, 900),
+    ('IACOB Spectroscopic Database (IAC)', 'NOT'): (370, 830),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): (500, 1000),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): (300, 550),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): (500, 1000),
@@ -1652,6 +1671,7 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('MAST — JWST', 'MIRI/SLITLESS'): (5000, 12000),
     ('MAST — JWST', 'NIRISS/SOSS'): (600, 2800),
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): (300, 1000),
+    ('NAOJ (Subaru MOIRCS, via JVO)', 'MOIRCS'): (900, 2500),
     ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): (370, 830),
     ('NOIRLab Astro Data Archive', 'goodman'): (320, 900),
     ('NOIRLab Astro Data Archive', 'echelle'): (350, 900),
