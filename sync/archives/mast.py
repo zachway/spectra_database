@@ -1,4 +1,4 @@
-"""MAST (HST, IUE, FUSE) — VO-TAP service at mast.stsci.edu/vo-tap/, no native Gaia column.
+"""MAST (HST, IUE, FUSE, EUVE, HUT, TUES, BEFS, WUPPE) — VO-TAP service at mast.stsci.edu/vo-tap/, no native Gaia column.
 
 The old objid/obsid reconciliation concern turns out to be moot: each
 ivoa.obscore row already carries a directly-usable access_url (confirmed
@@ -49,6 +49,32 @@ DEUTERIUM lamp exposures lack real sky coordinates) — confirmed live, it
 crashes the matcher's KD-tree build outright if not handled (NaN, not just
 wrong). Filtered via clean_float + dropping records with no position, same
 as the existing ra/dec-required check in sync.matcher.
+
+Extended to 5 more historical UV rocket/shuttle missions living in this same
+obscore table, found via a VO SSA-registry sweep (their own registered SSA
+services point at archive.stsci.edu, but the same rows are already present
+here in the CAOM table this module already queries): EUVE (9,830 rows), HUT
+(8,726), TUES (4,678), BEFS (2,719), WUPPE (1,429) — all confirmed live with
+real HD-star target names and the same access_format='image/fits' shape as
+EUVE above. Genuinely a same-day extension: no new endpoint, no new query
+shape, just 5 more values in obs_collection.
+
+Note on BEFS specifically: a handful of obs_ids have 2-4 rows *all* ending
+in the canonical `_vo.fits` suffix (e.g. befs1002_spa1_vo.fits through
+_spd1_vo.fits, confirmed live, same obs_id/target_name) — real distinct
+per-channel spectral segments of one exposure, not duplicates. The existing
+dedup (first `_vo.fits` row wins per obs_id) picks one of them as the
+representative link for that observation, same "one holding per exposure"
+simplification this project already makes elsewhere (e.g. naoj.py picking
+one product per raw_id) rather than modeling sub-exposure channels as
+separate holdings.
+
+Deliberately NOT extended to GALEX, despite 1.56M real dataproduct_type=
+'spectrum' rows existing in this same table — GALEX's primary mode is UV
+imaging/photometry; those rows are slitless-grism spectra in often-crowded
+fields, plausibly lower and more variable quality/blending than the
+dedicated single-object spectrometers above. Worth a data-quality sanity
+pass before adding, not a same-day extension like the 5 above.
 """
 
 from astropy.time import Time
@@ -60,7 +86,7 @@ TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom"
 QUERY = """
 SELECT TOP {page_size} obs_id, s_ra, s_dec, t_min, instrument_name, target_name, access_url, calib_level
 FROM ivoa.obscore
-WHERE dataproduct_type='spectrum' AND obs_collection IN ('HST', 'IUE', 'FUSE')
+WHERE dataproduct_type='spectrum' AND obs_collection IN ('HST', 'IUE', 'FUSE', 'EUVE', 'HUT', 'TUES', 'BEFS', 'WUPPE')
 AND access_format IN ('application/fits', 'image/fits')
 AND t_min > {last_t_min}
 ORDER BY t_min ASC

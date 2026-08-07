@@ -1483,6 +1483,9 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('MAST — JWST', 'MIRI/IMAGE'): 'n/a (imaging)',
     ('MAST — JWST', 'NIRISS/SOSS'): 'R ≈ 700',
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): 'R ≈ 45,000–160,000 (slit-dependent)',
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HR)'): 'R ≈ 110,000 (High Resolution mode)',
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HE)'): 'R ≈ 70,000–90,000 (High Efficiency mode)',
+    ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): 'R ≈ 25,000–67,000 (fiber-dependent)',
     ('NOIRLab Astro Data Archive', 'goodman'): 'R ≈ 300–4,500 (grating-dependent)',
     ('NOIRLab Astro Data Archive', 'echelle'): 'R ≈ 40,000–45,000 (CTIO echelle)',
     ('NOIRLab Astro Data Archive', 'chiron'): 'R ≈ 28,000–90,000 (mode-dependent)',
@@ -1507,6 +1510,8 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('SVO CAB Stellar Libraries', 'STELIB'): 'R ≈ 2,000 (~3 Å FWHM)',
     ('SVO CAB Stellar Libraries', 'XSL'): 'R ≈ 8,000–11,000 (arm-dependent)',
     ('SVO CAB Stellar Libraries', 'CaT'): 'R ≈ 5,000–6,000 (1.5 Å FWHM)',
+    ('XMM-Newton RGS', 'RGS1'): 'R ≈ 150–800 (first order, wavelength-dependent)',
+    ('XMM-Newton RGS', 'RGS2'): 'R ≈ 150–800 (first order, wavelength-dependent)',
 }
 
 # Wavelength coverage (nm, vacuum/air distinction not tracked -- published
@@ -1521,7 +1526,9 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
 # couldn't confirm a real published range for (e.g. CFHT's GECKO, PYTHIAS,
 # HERZBERG, OSIS, PUMA, SISFP, ISIS; Gemini's CIRPASS/OSCIR; NOIRLab's sami;
 # ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
-# HST's COS-STIS combined mode) are left out rather than guessed -- a
+# HST's COS-STIS combined mode; XMM-Newton RGS1/RGS2, whose real ~1.2-3.8nm
+# X-ray band would be invisible on this chart's linear optical/IR scale)
+# are left out rather than guessed -- a
 # missing key just means that instrument's bar doesn't render, the same
 # graceful-degradation shape as INSTRUMENT_RESOLVING_POWER's own "—". A few
 # instruments (GALAH/HERMES, LAMOST-MRS) are non-contiguous multi-band
@@ -1645,6 +1652,7 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('MAST — JWST', 'MIRI/SLITLESS'): (5000, 12000),
     ('MAST — JWST', 'NIRISS/SOSS'): (600, 2800),
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): (300, 1000),
+    ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): (370, 830),
     ('NOIRLab Astro Data Archive', 'goodman'): (320, 900),
     ('NOIRLab Astro Data Archive', 'echelle'): (350, 900),
     ('NOIRLab Astro Data Archive', 'chiron'): (410, 870),
