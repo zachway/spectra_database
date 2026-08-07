@@ -1422,6 +1422,10 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): 'R ≈ 600–8,000 (grating-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): 'R ≈ 600–8,000 (grating-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): 'R ≈ 600–8,000 (grating-dependent)',
+    ('IRTF SpeX (via IRSA)', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
+    ('IRTF iSHELL (via IRSA)', 'iSHELL'): 'R ≈ 80,000 (0.375" slit)',
+    ('IRTF Legacy Archive', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
+    ('IRTF Legacy Archive', 'CSHELL'): '—',
     ('Keck Observatory Archive', 'NIRSPEC'): 'R ≈ 2,000–25,000 (mode-dependent)',
     ('Keck Observatory Archive', 'HIRES'): 'R ≈ 25,000–85,000 (slit-dependent)',
     ('Keck Observatory Archive', 'MOSFIRE'): 'R ≈ 3,600',
@@ -1436,6 +1440,8 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('LBT — PEPSI', 'MODS'): 'R ≈ 1,000–3,000 (grating-dependent)',
     ('LBT — PEPSI', 'LUCI'): 'R ≈ 4,000–8,000 (mode-dependent)',
     ('LBT — PEPSI', 'PEPSI'): 'R ≈ 43,000–320,000 (mode-dependent)',
+    ('Las Cumbres Observatory -- FLOYDS', 'FLOYDS'): 'R ≈ 400–700 (order-dependent)',
+    ('Las Cumbres Observatory -- NRES', 'NRES'): 'R ≈ 48,000–53,000',
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): 'R ≈ 100,000',
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): 'R ≈ 600–2,000 (Kast, grating-dependent)',
     ('MAST', 'WFC3/IR'): 'R ≈ 130 (grism mode)',
@@ -1471,6 +1477,9 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('MAST — JWST', 'MIRI/IMAGE'): 'n/a (imaging)',
     ('MAST — JWST', 'NIRISS/SOSS'): 'R ≈ 700',
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): 'R ≈ 45,000–160,000 (slit-dependent)',
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HR)'): 'R ≈ 110,000 (High Resolution mode)',
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HE)'): 'R ≈ 70,000–90,000 (High Efficiency mode)',
+    ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): 'R ≈ 25,000–67,000 (fiber-dependent)',
     ('NOIRLab Astro Data Archive', 'goodman'): 'R ≈ 300–4,500 (grating-dependent)',
     ('NOIRLab Astro Data Archive', 'echelle'): 'R ≈ 40,000–45,000 (CTIO echelle)',
     ('NOIRLab Astro Data Archive', 'chiron'): 'R ≈ 28,000–90,000 (mode-dependent)',
@@ -1503,6 +1512,8 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('Chandra X-ray Observatory', 'LETG (ACIS-S)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
     ('Chandra X-ray Observatory', 'LETG (ACIS-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
     ('Chandra X-ray Observatory', 'LETG (HRC-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
+    ('XMM-Newton RGS', 'RGS1'): 'R ≈ 150–800 (first order, wavelength-dependent)',
+    ('XMM-Newton RGS', 'RGS2'): 'R ≈ 150–800 (first order, wavelength-dependent)',
 }
 
 # Wavelength coverage (nm, vacuum/air distinction not tracked -- published
@@ -1519,8 +1530,9 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
 # ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
 # HST's COS-STIS combined mode; Chandra's HETG/LETG, whose real ~0.1-3nm
 # X-ray coverage would be invisible or need a second log-scale axis on a
-# chart built for this project's optical/IR archives) are left out rather
-# than guessed -- a
+# chart built for this project's optical/IR archives; XMM-Newton RGS1/RGS2,
+# whose real ~1.2-3.8nm X-ray band would be invisible on this chart's linear
+# optical/IR scale) are left out rather than guessed -- a
 # missing key just means that instrument's bar doesn't render, the same
 # graceful-degradation shape as INSTRUMENT_RESOLVING_POWER's own "—". A few
 # instruments (GALAH/HERMES, LAMOST-MRS) are non-contiguous multi-band
@@ -1595,6 +1607,9 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): (300, 550),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): (500, 1000),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): (300, 550),
+    ('IRTF SpeX (via IRSA)', 'SpeX'): (700, 5300),
+    ('IRTF iSHELL (via IRSA)', 'iSHELL'): (1060, 5300),
+    ('IRTF Legacy Archive', 'SpeX'): (700, 5300),
     ('Keck Observatory Archive', 'NIRSPEC'): (950, 5500),
     ('Keck Observatory Archive', 'HIRES'): (300, 1000),
     ('Keck Observatory Archive', 'MOSFIRE'): (970, 2450),
@@ -1609,6 +1624,8 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('LBT — PEPSI', 'MODS'): (320, 1000),
     ('LBT — PEPSI', 'LUCI'): (850, 2500),
     ('LBT — PEPSI', 'PEPSI'): (383, 907),
+    ('Las Cumbres Observatory -- FLOYDS', 'FLOYDS'): (320, 1000),
+    ('Las Cumbres Observatory -- NRES', 'NRES'): (380, 860),
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): (374, 970),
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): (330, 1000),
     ('MAST', 'WFC3/IR'): (800, 1700),
@@ -1633,6 +1650,7 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('MAST — JWST', 'MIRI/SLITLESS'): (5000, 12000),
     ('MAST — JWST', 'NIRISS/SOSS'): (600, 2800),
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): (300, 1000),
+    ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): (370, 830),
     ('NOIRLab Astro Data Archive', 'goodman'): (320, 900),
     ('NOIRLab Astro Data Archive', 'echelle'): (350, 900),
     ('NOIRLab Astro Data Archive', 'chiron'): (410, 870),
