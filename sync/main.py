@@ -52,6 +52,7 @@ from sync.archives import (
     harpsn_tng,
     hermes_mercator,
     ing,
+    irsa_missions,
     irtf_ishell,
     irtf_legacy,
     irtf_spex,
@@ -123,6 +124,7 @@ ARCHIVES = {
     "lco_floyds": lco_floyds.fetch,
     "lco_nres": lco_nres.fetch,
     "svo_cab": svo_cab.fetch,
+    "irsa_missions": irsa_missions.fetch,
 }
 
 

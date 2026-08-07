@@ -73,6 +73,15 @@ five sharing this one archive_code.
 Final, static datasets (none of these five libraries has grown since its
 original publication) -- one full pull is enough forever, so fetch() is a
 no-op once the cursor marks it done, same shape as rave.py/feros_gavo.py.
+
+webapp/app.py's INSTRUMENT_RESOLVING_POWER/INSTRUMENT_WAVELENGTH_RANGE_NM
+deliberately have no entry for Gaia FGK Benchmark Stars -- its own per-row
+"instrument" field (visible in the raw SSA response, e.g. "ESPaDOnS_tauCet",
+"HARPS.Archive_tauCet", "NARVAL_tauCet") shows this collection is itself a
+compilation of high-resolution spectra pulled from several different
+underlying spectrographs, not one instrument with one citable resolving
+power -- same reasoning several other archives here give for omitting a
+mixed/uncertain entry rather than guessing a single number.
 """
 
 import io
