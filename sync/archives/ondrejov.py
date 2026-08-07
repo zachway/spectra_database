@@ -47,6 +47,8 @@ reasoning feros_gavo.py/hermes_mercator.py give for including
 still-embargoed rows (this project doesn't download bytes anyway).
 """
 
+from __future__ import annotations
+
 from astropy.time import Time
 
 from sync.base import RawObservation, clean_float, make_tap_service
