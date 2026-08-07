@@ -54,6 +54,7 @@ from sync.archives import (
     hermes_mercator,
     iacob,
     ing,
+    irsa_missions,
     irtf_ishell,
     irtf_legacy,
     irtf_spex,
@@ -80,6 +81,7 @@ from sync.archives import (
     sdss_v_optical,
     sophie,
     subaru_moircs,
+    svo_cab,
     xmm,
 )
 from sync.runner import run_sync
@@ -134,6 +136,8 @@ ARCHIVES = {
     "lco_nres": lco_nres.fetch,
     "ondrejov": ondrejov.fetch,
     "polarbase": polarbase.fetch,
+    "svo_cab": svo_cab.fetch,
+    "irsa_missions": irsa_missions.fetch,
     "iacob": iacob.fetch,
     "subaru_moircs": subaru_moircs.fetch,
     "xmm": xmm.fetch,
