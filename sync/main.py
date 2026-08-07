@@ -37,6 +37,7 @@ from sync.archives import (
     carmenes,
     carmenes_caha,
     cfht_cadc,
+    chandra,
     dao,
     desi,
     elodie,
@@ -51,6 +52,7 @@ from sync.archives import (
     gtc,
     harpsn_tng,
     hermes_mercator,
+    iacob,
     ing,
     irtf_ishell,
     irtf_legacy,
@@ -77,6 +79,7 @@ from sync.archives import (
     sdss_v_apogee,
     sdss_v_optical,
     sophie,
+    subaru_moircs,
     xmm,
 )
 from sync.runner import run_sync
@@ -89,6 +92,7 @@ ARCHIVES = {
     "galah": galah.fetch,
     "eso": eso.fetch,
     "cfht_cadc": cfht_cadc.fetch,
+    "chandra": chandra.fetch,
     "dao": dao.fetch,
     "gemini": gemini.fetch,
     "gemini_ghost": gemini_ghost.fetch,
@@ -130,6 +134,8 @@ ARCHIVES = {
     "lco_nres": lco_nres.fetch,
     "ondrejov": ondrejov.fetch,
     "polarbase": polarbase.fetch,
+    "iacob": iacob.fetch,
+    "subaru_moircs": subaru_moircs.fetch,
     "xmm": xmm.fetch,
 }
 
