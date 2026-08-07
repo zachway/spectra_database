@@ -66,7 +66,9 @@ from sync.archives import (
     mast,
     mast_jwst,
     naoj,
+    neid,
     noirlab,
+    not_fies,
     oirsa,
     rave,
     salt_hrs,
@@ -75,6 +77,7 @@ from sync.archives import (
     sdss_v_optical,
     sophie,
     subaru_moircs,
+    xmm,
 )
 from sync.runner import run_sync
 
@@ -113,6 +116,8 @@ ARCHIVES = {
     "salt_hrs": salt_hrs.fetch,
     "ing": ing.fetch,
     "naoj": naoj.fetch,
+    "neid": neid.fetch,
+    "not_fies": not_fies.fetch,
     "oirsa": oirsa.fetch,
     "gtc": gtc.fetch,
     "hermes_mercator": hermes_mercator.fetch,
@@ -125,6 +130,7 @@ ARCHIVES = {
     "lco_nres": lco_nres.fetch,
     "iacob": iacob.fetch,
     "subaru_moircs": subaru_moircs.fetch,
+    "xmm": xmm.fetch,
 }
 
 
