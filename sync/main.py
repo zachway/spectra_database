@@ -67,6 +67,7 @@ from sync.archives import (
     naoj,
     noirlab,
     oirsa,
+    ondrejov,
     rave,
     salt_hrs,
     sdss_legacy_optical,
@@ -121,6 +122,7 @@ ARCHIVES = {
     "irtf_legacy": irtf_legacy.fetch,
     "lco_floyds": lco_floyds.fetch,
     "lco_nres": lco_nres.fetch,
+    "ondrejov": ondrejov.fetch,
 }
 
 
