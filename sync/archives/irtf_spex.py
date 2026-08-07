@@ -9,7 +9,9 @@ across at least four independent systems --
 2. This module's source: the IRSA-hosted IRTF Data Archive
    (irsa.ipac.caltech.edu) -- 2016B-present (SpeX from 2016-08-02 onward,
    confirmed live), the only piece with a real machine-readable API (IBE +
-   TAP, both mirroring the same underlying CAOM2 tables).
+   TAP, both mirroring the same underlying CAOM2 tables). Covers both of
+   IRTF's current instruments, SpeX (here) and iSHELL (irtf_ishell.py) --
+   see sync/archives/_irtf_common.py for the shared fetch logic.
 3. irtf.mearth_spectra -- a separate, unrelated IRSA table ("IRTF MEarth
    Spectra") sitting right next to the CAOM ones in the same IBE mission
    listing; a genuinely different dataset, not covered by this module.
@@ -74,61 +76,12 @@ this exact join query ran in under 5s live.
 
 from __future__ import annotations
 
-import re
+from sync.archives import _irtf_common
+from sync.base import RawObservation
 
-from astropy.time import Time
-
-from sync.base import RawObservation, make_tap_service, reduction_status_from_calib_level
-
-TAP_URL = "https://irsa.ipac.caltech.edu/TAP"
-
-QUERY = """
-SELECT TOP {page_size} o.target_name, o.proposal_id, p.time_bounds_lower, p.planeid, p.calibrationlevel, a.uri
-FROM caom.observation_irtf o
-JOIN caom.plane_irtf p ON o.obsid = p.obsid
-JOIN caom.artifact_irtf a ON a.planeid = p.planeid
-WHERE o.instrument_name LIKE 'SpeX%' AND a.producttype = 'info' AND a.contenttype = 'text/html'
-  AND p.time_bounds_lower > {last_mjd}
-ORDER BY p.time_bounds_lower ASC
-"""
-
-PAGE_SIZE = 5000
-
+INSTRUMENT_PATTERN = "SpeX%"
 INSTRUMENT = "SpeX"
-
-# Strips a trailing reddening annotation like "_AV=+1.16" or "_AV=-0.4" —
-# confirmed live on real target_name values (see module docstring).
-_AV_SUFFIX = re.compile(r"_AV=[+-]?\d+\.?\d*$")
-
-
-def _clean_name(raw: str) -> str:
-    return _AV_SUFFIX.sub("", raw).replace("_", " ").strip()
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
-    last_mjd = cursor.get("last_mjd", 0)
-
-    tap = make_tap_service(TAP_URL)
-    query = QUERY.format(page_size=PAGE_SIZE, last_mjd=last_mjd)
-    table = tap.search(query, maxrec=PAGE_SIZE).to_table()
-
-    records = []
-    max_mjd = last_mjd
-    for row in table:
-        mjd = float(row["time_bounds_lower"])
-        max_mjd = max(max_mjd, mjd)
-        raw_name = str(row["target_name"])
-        records.append(
-            RawObservation(
-                archive_obs_id=str(row["planeid"]),
-                archive_url=str(row["uri"]),
-                instrument=INSTRUMENT,
-                obs_date=Time(mjd, format="mjd").to_datetime().date(),
-                program_id=str(row["proposal_id"]),
-                raw_target_name=_clean_name(raw_name) if raw_name else None,
-                reduction_status=reduction_status_from_calib_level(row["calibrationlevel"]),
-            )
-        )
-
-    new_cursor = {"last_mjd": max_mjd if records else last_mjd}
-    return records, new_cursor
+    return _irtf_common.fetch(cursor, INSTRUMENT_PATTERN, INSTRUMENT)
