@@ -2302,8 +2302,13 @@ NOT_YET_TRACKED = [
     ("—", "ARIES DOT (3.6m Devasthal)", "no public archive; the one data endpoint is PI-login only"),
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
-    ("—", "BeSS (Be Star Spectra, France)", "not yet investigated; only a web query form found, no confirmed API"),
-    ("—", "IAO Hanle (India), SAO RAS BTA/SCORPIO (Russia), McDonald Tull Coude, OAN-SPM (Mexico)", "investigated -- no public bulk/API archive found for any of these"),
+    ("—", "GALEX (via MAST)", "found live (1.5M+ grism-spectroscopy rows) but not ingested -- primary mission was UV imaging, so slitless grism spectra in crowded fields are often low-S/N/blended; needs a data-quality pass before treating it as a clean win like its MAST siblings EUVE/HUT/TUES/BEFS/WUPPE"),
+    ("—", "Euclid", "faint limit will go past Gaia's own, breaking the Gaia-source_id-first cross-match this whole project is built on -- tracked for eventual incorporation, not a quick add"),
+    ("—", "Login-gated or no scriptable query tool (STELLA, Mount John/HERCULES, Bosscha, Kottamia, Athens/Kryoneri, MMT, Pico dos Dias, Wise, VATT, TRES, McDonald/HPF, Las Campanas/Magellan, INAOE, Kiso/SMOKA, IAO Hanle, SAO RAS BTA/SCORPIO, OAN-SPM)", "confirmed via direct site checks, not just an undocumented API -- either explicit login required or genuinely no bulk/query interface exists"),
+    ("—", "Digitized plate archives, not dispersed spectra (Boyden, Harvard DASCH, Hamburg APPLAUSE, Yerkes)", "real, live, scriptable archives -- but photometric/astrometric plates or light curves, wrong data product for this project"),
+    ("—", "Konkoly Observatory (Hungary)", "has a real TAP service, but it only serves Solar System small-bodies data, not stellar spectra"),
+    ("—", "BOAO/KADC (Korea), Crimean Astrophysical Observatory", "archives existed but are now unreachable -- HTTP 410 Gone / site down, not just hard to find"),
+    ("—", "Tartu Observatory (Estonia), Girawali Observatory/IGO (India)", "inconclusive -- site unreachable during checks, not fully ruled out; worth a retry later"),
 ]
 
 ARCHIVE_STATUS_TEMPLATE = """
@@ -2339,7 +2344,7 @@ ARCHIVE_STATUS_TEMPLATE = """
 
   <hr>
   <h2>Known gaps</h2>
-  <p class="note">Spectrographs known to exist at an already-implemented archive (or whole archives) that aren't tracked yet -- hand-maintained, not derived from the database. See More Info for the broader "pointer database" scope note.</p>
+  <p class="note">Spectrographs known to exist at an already-implemented archive (or whole archives) that aren't tracked yet -- hand-maintained, not derived from the database. Most rows below come from an exhaustive pass over Wikipedia's full list of ~595 ground-based observatories plus a VO registry sweep, checking each one directly rather than trusting a search summary; every candidate that cleared the bar has already shipped as its own archive module. See More Info for the broader "pointer database" scope note.</p>
   <table>
     <tr><th>Archive</th><th>Not yet tracked</th><th>Why</th></tr>
     {% for archive, missing, why in not_yet_tracked %}
