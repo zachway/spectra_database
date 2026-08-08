@@ -432,6 +432,8 @@ SHARED_STYLE = """
     dt { font-weight: bold; }
     dd { margin: 0; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    .table-scroll { overflow-x: auto; margin-top: 1rem; }
+    .table-scroll table { margin-top: 0; }
     th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #000; }
     a { color: #000; }
     .error { font-weight: bold; border: 1px solid #000; padding: 0.5rem; }
@@ -2325,6 +2327,7 @@ ARCHIVE_STATUS_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Leaderboard tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them. See the Instruments tab for the per-archive instrument breakdown, including resolving power.</p>
+  <div class="table-scroll">
   <table>
     <tr>
       <th>Archive</th><th>Last synced</th><th>Status</th><th>Observations span</th><th>Total</th>
@@ -2341,6 +2344,7 @@ ARCHIVE_STATUS_TEMPLATE = """
     </tr>
     {% endfor %}
   </table>
+  </div>
 
   <hr>
   <h2>Known gaps</h2>
