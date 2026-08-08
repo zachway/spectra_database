@@ -83,6 +83,17 @@ from datetime import datetime
 
 from sync.base import RawObservation, clean_float, make_tap_service
 
+
+def _parse_start_utc(start_utc_str: str) -> datetime:
+    # Python 3.9's datetime.fromisoformat only accepts 0, 3, or 6 fractional
+    # digits, but XSA returns arbitrary precision (e.g. "...T14:08:26.0") --
+    # confirmed live to crash the import on exactly that shape. Pad/truncate
+    # to 6 digits so any precision round-trips.
+    if "." in start_utc_str:
+        base, frac = start_utc_str.split(".", 1)
+        start_utc_str = f"{base}.{(frac + '000000')[:6]}"
+    return datetime.fromisoformat(start_utc_str)
+
 TAP_URL = "https://nxsa.esac.esa.int/tap-server/tap"
 
 QUERY = """
@@ -118,7 +129,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         max_start_utc = max(max_start_utc, start_utc_str)
 
         target = str(row["target"]).strip()
-        obs_dt = datetime.fromisoformat(start_utc_str)
+        obs_dt = _parse_start_utc(start_utc_str)
 
         records.append(
             RawObservation(

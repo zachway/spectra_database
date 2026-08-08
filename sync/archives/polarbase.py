@@ -171,26 +171,39 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     # new to fetch until real time advances, same shape as any other
     # actively-growing archive's watermark reaching the present.
     today = datetime.now(timezone.utc).date()
-    if window_start > today:
-        return [], cursor
 
-    while True:
-        window_end = min(window_start + timedelta(days=window_days), today + timedelta(days=1))
-        items = _run_query(window_start, window_end)
-        if len(items) >= RESPONSE_CAP and window_days > MIN_WINDOW_DAYS:
-            # Can't trust this window as complete -- bisect and retry the
-            # same start (see module docstring).
-            window_days = max(MIN_WINDOW_DAYS, window_days // 2)
-            continue
-        break
+    # sync.main's generic driver treats a zero-record page as "archive fully
+    # synced" and stops calling fetch() again -- but ARCHIVE_START (2000-01-01)
+    # predates the earliest real row (2005-05-21, see module docstring) by
+    # five years, so a single empty window (here, or any other genuinely quiet
+    # stretch later in the walk) would otherwise prematurely end the whole
+    # walk after just one page. Keep advancing internally past empty windows
+    # until real records are found or the walk reaches the present.
+    while window_start <= today:
+        while True:
+            window_end = min(window_start + timedelta(days=window_days), today + timedelta(days=1))
+            items = _run_query(window_start, window_end)
+            if len(items) >= RESPONSE_CAP and window_days > MIN_WINDOW_DAYS:
+                # Can't trust this window as complete -- bisect and retry the
+                # same start (see module docstring).
+                window_days = max(MIN_WINDOW_DAYS, window_days // 2)
+                continue
+            break
 
-    records = _to_records(items)
+        records = _to_records(items)
 
-    # Grow the window back up for the next span once comfortably under
-    # cap, so quiet stretches don't cost one request per (small) window.
-    next_window_days = window_days
-    if len(items) < RESPONSE_CAP // 2:
-        next_window_days = min(MAX_WINDOW_DAYS, window_days * 2)
+        # Grow the window back up for the next span once comfortably under
+        # cap, so quiet stretches don't cost one request per (small) window.
+        next_window_days = window_days
+        if len(items) < RESPONSE_CAP // 2:
+            next_window_days = min(MAX_WINDOW_DAYS, window_days * 2)
 
-    new_cursor = {"window_start": window_end.isoformat(), "window_days": next_window_days}
-    return records, new_cursor
+        new_cursor = {"window_start": window_end.isoformat(), "window_days": next_window_days}
+
+        if records:
+            return records, new_cursor
+
+        window_start = window_end
+        window_days = next_window_days
+
+    return [], cursor
